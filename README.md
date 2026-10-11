@@ -642,3 +642,24 @@ dotnet test MasterServer.Tests/MasterServer.Tests.csproj --runtime linux-x64 -p:
 These checks do not verify PostgreSQL deployment, Unity presentation/input, or a
 real GameServer process. The Master-only delivery also requires a headless smoke
 against a real local Kestrel listener; TestServer alone is not TCP delivery proof.
+
+## Owner match diagnostics
+
+`GET /owner/matches/{matchId}/diagnostics` uses the same dedicated `X-Console-Key`
+and disabled-without-key behavior as `/owner/observation`. It reads only a known
+persisted match assigned to the provisioned VPS GameHost through its existing
+private match-control URL/key. Responses use a safe typed projection, no-store
+caching, a four-second upstream deadline, a 512 KiB limit and no redirects.
+A player token does not authorize this route. Public ingress must exclude all
+`/owner` routes; the existing VPS Caddy configuration already does.
+
+The response contains bounded match events, server tick-work/scheduling metrics
+and timestamped Steam peer health. GameHost retains active matches and its last
+50 ended matches, with 256 events per match, until restart. `410` means no retained
+GameHost logs; `404` means an unknown match or disabled owner endpoint; `503` means
+an unavailable/unprovisioned GameHost; `502` means invalid or oversized diagnostics.
+Old GameHost binaries cannot provide this data. Client FPS/correction counts are
+not part of this projection. No database migration is required.
+
+The accompanying hitstun snapshot repair uses simulation/admission protocol 7;
+release Master, GameHost and Steam clients together.

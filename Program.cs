@@ -137,6 +137,8 @@ builder.Services.AddHostedService<RoomCleanupService>();
 builder.Services.AddHttpClient<IMatchLauncher, HttpMatchLauncher>();
 builder.Services.AddHttpClient("GameHostHealth")
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient<OwnerMatchDiagnosticsReader>()
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddAuthorization();
 
 builder.Services.AddRateLimiter(options =>
@@ -207,20 +209,21 @@ app.MapGet("/owner/observation", async (
     LobbyManager lobbies,
     TimeProvider clock) =>
 {
-    httpContext.Response.Headers["Cache-Control"] = "no-store";
-    var key = configuration["Console:Key"];
-    if (key is null || key.Length < 32)
-        return Results.NotFound();
-
-    var supplied = httpContext.Request.Headers["X-Console-Key"].ToString();
-    var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(key));
-    var suppliedHash = SHA256.HashData(Encoding.UTF8.GetBytes(supplied));
-    if (!CryptographicOperations.FixedTimeEquals(expectedHash, suppliedHash))
-        return Results.Unauthorized();
+    if (OwnerConsoleAccess.Reject(httpContext, configuration) is { } rejected) return rejected;
 
     var snapshot = await OwnerObservationSnapshotBuilder.CaptureAsync(
         db, chat, rooms, lobbies, clock, httpContext.RequestAborted);
     return Results.Ok(snapshot);
+});
+
+app.MapGet("/owner/matches/{matchId:guid}/diagnostics", async (
+    Guid matchId, HttpContext context, IConfiguration configuration, OwnerMatchDiagnosticsReader reader) =>
+{
+    if (OwnerConsoleAccess.Reject(context, configuration) is { } rejected) return rejected;
+    var result = await reader.ReadAsync(matchId, context.RequestAborted);
+    return result.Diagnostics is { } data
+        ? Results.Ok(data)
+        : Results.Json(new { message = result.Message }, statusCode: result.StatusCode);
 });
 
 app.MapGet("/ready", async (AppDbContext db, CancellationToken requestAborted) =>
