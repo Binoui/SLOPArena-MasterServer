@@ -526,6 +526,19 @@ public class ServerRegistrationTests : IClassFixture<WebApplicationFactory<Progr
         Assert.Null(canceled.WinnerSteamId);
     }
 
+    [Theory]
+    [InlineData(7, false)]
+    [InlineData(8, true)]
+    public async Task VpsRegistration_EnforcesProtocol8Compatibility(int protocolVersion, bool accepted)
+    {
+        using var client = CreateVpsClient();
+        using var response = await PostVpsRegistrationAsync(
+            client, VpsRequest() with { ProtocolVersion = protocolVersion }, RegistrationKey);
+
+        Assert.Equal(accepted ? HttpStatusCode.OK : HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(accepted ? 1 : 0, await CountVpsGameServersAsync());
+    }
+
     [Fact]
     public async Task VpsRegistration_RejectsSupersededProtocolBeforeAdvertisingHost()
     {
