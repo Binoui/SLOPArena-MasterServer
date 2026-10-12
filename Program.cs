@@ -216,6 +216,19 @@ app.MapGet("/owner/observation", async (
     return Results.Ok(snapshot);
 });
 
+app.MapGet("/owner/players", async (
+    HttpContext context, IConfiguration configuration, AppDbContext db, TimeProvider clock,
+    int? page, string? search) =>
+{
+    if (OwnerConsoleAccess.Reject(context, configuration) is { } rejected) return rejected;
+    var requestedPage = page ?? 0;
+    var requestedSearch = (search ?? "").Trim();
+    if (requestedPage < 0 || requestedPage > int.MaxValue / OwnerRegisteredPlayers.Size || requestedSearch.Length > 64)
+        return Results.BadRequest(new { message = "Page must be nonnegative and search must be at most 64 characters." });
+    return Results.Ok(await OwnerRegisteredPlayers.CaptureAsync(
+        db, clock, requestedPage, requestedSearch, context.RequestAborted));
+});
+
 app.MapGet("/owner/matches/{matchId:guid}/diagnostics", async (
     Guid matchId, HttpContext context, IConfiguration configuration, OwnerMatchDiagnosticsReader reader) =>
 {

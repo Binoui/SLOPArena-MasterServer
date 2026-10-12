@@ -428,6 +428,28 @@ GameServer rows remain database-backed. Each source is snapshotted under its
 existing synchronization or database query; the response is not an atomic
 cross-store transaction and makes no claim of one.
 
+### Registered-player history
+
+`GET /owner/players?page=0&search=<name-or-Steam-ID>` uses the same dedicated
+console-key check and `Cache-Control: no-store` as owner observation. It is private
+and must remain excluded from public ingress. The console proxies this through
+`GET /api/players`, accepting only the bounded page and search parameters.
+
+The response contains `capturedAtUtc`, zero-based `page`, `pageSize` (100),
+`total` matching registrations, and `players`: string `steamId`, latest saved
+`name`, `authProvider`, UTC `firstLoginUtc` (the persisted account creation
+time), and nullable `lastLoginUtc`. It includes Steam and guest accounts, even
+when offline or absent from Match history. It omits MMR, tickets and credentials.
+Rows sort by latest login (creation time if absent), then Steam ID for stable
+pagination. Search is a case-insensitive name substring or an exact numeric ID;
+search text is trimmed and limited to 64 characters. Invalid pages or searches
+return `400`. No schema migration is required.
+
+Player records survive Master restart. Login dates describe successful
+authentication, not every connection or game launch. The console joins current
+Master presence from its independent observation feed and refreshes registered
+history every 30 seconds only while the Players history view is visible.
+
 ## Chat client contract
 
 This is the Master-side contract for [SlopArena chat](https://github.com/Binoui/SlopArena/issues/206).

@@ -26,17 +26,19 @@ public sealed class OwnerObservationIntegrationTests : IDisposable
     private readonly List<WebApplicationFactory<Program>> _factories = new();
     private readonly List<HubConnection> _connections = new();
 
-    [Fact]
-    public async Task Endpoint_requires_dedicated_key_and_is_disabled_without_a_long_key()
+    [Theory]
+    [InlineData("/owner/observation")]
+    [InlineData("/owner/players")]
+    public async Task Endpoint_requires_dedicated_key_and_is_disabled_without_a_long_key(string route)
     {
         var (factory, client) = CreateFactory();
         using (client)
         {
-            using var anonymous = await client.GetAsync("/owner/observation");
+            using var anonymous = await client.GetAsync(route);
             Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
             Assert.Equal("no-store", anonymous.Headers.CacheControl?.ToString());
 
-            using var wrong = new HttpRequestMessage(HttpMethod.Get, "/owner/observation");
+            using var wrong = new HttpRequestMessage(HttpMethod.Get, route);
             wrong.Headers.Add("X-Console-Key", "wrong-console-key-0123456789abcdef");
             using var wrongResponse = await client.SendAsync(wrong);
             Assert.Equal(HttpStatusCode.Unauthorized, wrongResponse.StatusCode);
@@ -44,7 +46,7 @@ public sealed class OwnerObservationIntegrationTests : IDisposable
             var (_, shortKeyClient) = CreateFactory(consoleKey: "too-short");
             using (shortKeyClient)
             {
-                using var shortKeyResponse = await shortKeyClient.GetAsync("/owner/observation");
+                using var shortKeyResponse = await shortKeyClient.GetAsync(route);
                 Assert.Equal(HttpStatusCode.NotFound, shortKeyResponse.StatusCode);
                 Assert.Equal("no-store", shortKeyResponse.Headers.CacheControl?.ToString());
             }
@@ -52,28 +54,36 @@ public sealed class OwnerObservationIntegrationTests : IDisposable
             var (_, missingKeyClient) = CreateFactory(consoleKey: null);
             using (missingKeyClient)
             {
-                using var missingKeyResponse = await missingKeyClient.GetAsync("/owner/observation");
+                using var missingKeyResponse = await missingKeyClient.GetAsync(route);
                 Assert.Equal(HttpStatusCode.NotFound, missingKeyResponse.StatusCode);
             }
 
             var session = await RegisterPlayerAsync(client, "Player JWT");
-            using var playerRequest = new HttpRequestMessage(HttpMethod.Get, "/owner/observation");
+            using var playerRequest = new HttpRequestMessage(HttpMethod.Get, route);
             playerRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.Token);
             using var playerResponse = await client.SendAsync(playerRequest);
             Assert.Equal(HttpStatusCode.Unauthorized, playerResponse.StatusCode);
 
-            using var ownerRequest = new HttpRequestMessage(HttpMethod.Get, "/owner/observation");
+            using var ownerRequest = new HttpRequestMessage(HttpMethod.Get, route);
             ownerRequest.Headers.Add("X-Console-Key", OwnerKey);
             using var ownerResponse = await client.SendAsync(ownerRequest);
             Assert.Equal(HttpStatusCode.OK, ownerResponse.StatusCode);
             Assert.Equal("no-store", ownerResponse.Headers.CacheControl?.ToString());
             using var json = await JsonDocument.ParseAsync(await ownerResponse.Content.ReadAsStreamAsync());
-            Assert.Empty(json.RootElement.GetProperty("players").EnumerateArray());
-            Assert.Equal(0, json.RootElement.GetProperty("rooms").GetArrayLength());
-            Assert.Equal(0, json.RootElement.GetProperty("lobbies").GetArrayLength());
-            Assert.Equal(0, json.RootElement.GetProperty("matches").GetArrayLength());
-            Assert.Equal(0, json.RootElement.GetProperty("globalChat").GetArrayLength());
-            Assert.Equal(0, json.RootElement.GetProperty("servers").GetArrayLength());
+            if (route == "/owner/observation")
+            {
+                Assert.Empty(json.RootElement.GetProperty("players").EnumerateArray());
+                Assert.Equal(0, json.RootElement.GetProperty("rooms").GetArrayLength());
+                Assert.Equal(0, json.RootElement.GetProperty("lobbies").GetArrayLength());
+                Assert.Equal(0, json.RootElement.GetProperty("matches").GetArrayLength());
+                Assert.Equal(0, json.RootElement.GetProperty("globalChat").GetArrayLength());
+                Assert.Equal(0, json.RootElement.GetProperty("servers").GetArrayLength());
+            }
+            else
+            {
+                Assert.Equal(1, json.RootElement.GetProperty("total").GetInt32());
+                Assert.Single(json.RootElement.GetProperty("players").EnumerateArray());
+            }
             using var scope = factory.Services.CreateScope();
             Assert.Equal(1, await scope.ServiceProvider.GetRequiredService<AppDbContext>().Users.CountAsync());
         }
@@ -388,6 +398,97 @@ public sealed class OwnerObservationIntegrationTests : IDisposable
             Assert.Equal("message-0-1", messages[0].GetProperty("text").GetString());
             Assert.Equal("message-10-0", messages[^1].GetProperty("text").GetString());
         }
+    }
+
+    [Fact]
+    public async Task Registered_history_includes_offline_players_without_matches_and_preserves_identity_and_dates()
+    {
+        var (factory, clientSource) = CreateFactory();
+        using var client = clientSource;
+        var created = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+        var login = created.AddDays(2);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Users.AddRange(
+                new User { SteamId = 76561199006987393, Username = "LeSandwich", AuthProvider = "steam", CreatedAt = created, LastLogin = login },
+                new User { SteamId = 1001, Username = "Guest-record", AuthProvider = "guest", CreatedAt = created, LastLogin = null });
+            await db.SaveChangesAsync();
+        }
+        using var history = await GetRegisteredPlayersAsync(client);
+        var root = history.RootElement;
+        Assert.Equal(2, root.GetProperty("total").GetInt32());
+        Assert.Equal(100, root.GetProperty("pageSize").GetInt32());
+        var players = root.GetProperty("players").EnumerateArray().ToArray();
+        Assert.Equal("76561199006987393", players[0].GetProperty("steamId").GetString());
+        Assert.Equal("LeSandwich", players[0].GetProperty("name").GetString());
+        Assert.Equal("steam", players[0].GetProperty("authProvider").GetString());
+        Assert.Equal(new DateTimeOffset(created), players[0].GetProperty("firstLoginUtc").GetDateTimeOffset());
+        Assert.Equal(new DateTimeOffset(login), players[0].GetProperty("lastLoginUtc").GetDateTimeOffset());
+        Assert.Equal(JsonValueKind.Null, players[1].GetProperty("lastLoginUtc").ValueKind);
+        Assert.Equal(new[] { "authProvider", "firstLoginUtc", "lastLoginUtc", "name", "steamId" },
+            players[0].EnumerateObject().Select(property => property.Name).OrderBy(name => name).ToArray());
+        using var observation = await GetOwnerObservationAsync(client);
+        Assert.Empty(observation.RootElement.GetProperty("players").EnumerateArray());
+        Assert.Empty(observation.RootElement.GetProperty("matches").EnumerateArray());
+        using var search = await GetRegisteredPlayersAsync(client, "?search=sAnDwIcH");
+        Assert.Equal(1, search.RootElement.GetProperty("total").GetInt32());
+        using var idSearch = await GetRegisteredPlayersAsync(client, "?search=76561199006987393");
+        Assert.Equal("76561199006987393", idSearch.RootElement.GetProperty("players")[0].GetProperty("steamId").GetString());
+        using var empty = await GetRegisteredPlayersAsync(client, "?search=missing");
+        Assert.Equal(0, empty.RootElement.GetProperty("total").GetInt32());
+        Assert.Empty(empty.RootElement.GetProperty("players").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Registered_history_pages_all_records_in_stable_latest_login_order()
+    {
+        var (factory, clientSource) = CreateFactory();
+        using var client = clientSource;
+        var created = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            for (var index = 0; index < 105; index++)
+                db.Users.Add(new User { SteamId = 1000 + index, Username = $"Player {index}", CreatedAt = created, LastLogin = created });
+            db.Users.Add(new User { SteamId = 2000, Username = "Latest", CreatedAt = created, LastLogin = created.AddDays(1) });
+            await db.SaveChangesAsync();
+        }
+        using var first = await GetRegisteredPlayersAsync(client);
+        using var second = await GetRegisteredPlayersAsync(client, "?page=1");
+        var firstIds = first.RootElement.GetProperty("players").EnumerateArray().Select(player => player.GetProperty("steamId").GetString()).ToArray();
+        var secondIds = second.RootElement.GetProperty("players").EnumerateArray().Select(player => player.GetProperty("steamId").GetString()).ToArray();
+        Assert.Equal(106, first.RootElement.GetProperty("total").GetInt32());
+        Assert.Equal(100, firstIds.Length);
+        Assert.Equal("2000", firstIds[0]);
+        Assert.Equal("1000", firstIds[1]);
+        Assert.Equal(6, secondIds.Length);
+        Assert.Equal("1104", secondIds[^1]);
+        Assert.Equal(106, firstIds.Concat(secondIds).Distinct().Count());
+    }
+
+    [Theory]
+    [InlineData("?page=-1")]
+    [InlineData("?page=2147483647")]
+    [InlineData("?page=invalid")]
+    [InlineData("?search=abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklm")]
+    public async Task Registered_history_rejects_invalid_queries(string query)
+    {
+        var (_, clientSource) = CreateFactory();
+        using var client = clientSource;
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/owner/players" + query);
+        request.Headers.Add("X-Console-Key", OwnerKey);
+        using var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    private static async Task<JsonDocument> GetRegisteredPlayersAsync(HttpClient client, string query = "")
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/owner/players" + query);
+        request.Headers.Add("X-Console-Key", OwnerKey);
+        using var response = await client.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        return await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
     }
 
     private (WebApplicationFactory<Program> Factory, HttpClient Client) CreateFactory(
