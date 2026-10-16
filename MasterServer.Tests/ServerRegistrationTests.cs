@@ -527,9 +527,9 @@ public class ServerRegistrationTests : IClassFixture<WebApplicationFactory<Progr
     }
 
     [Theory]
-    [InlineData(7, false)]
-    [InlineData(8, true)]
-    public async Task VpsRegistration_EnforcesProtocol8Compatibility(int protocolVersion, bool accepted)
+    [InlineData(8, false)]
+    [InlineData(9, true)]
+    public async Task VpsRegistration_EnforcesProtocol9Compatibility(int protocolVersion, bool accepted)
     {
         using var client = CreateVpsClient();
         using var response = await PostVpsRegistrationAsync(
@@ -673,6 +673,42 @@ public class ServerRegistrationTests : IClassFixture<WebApplicationFactory<Progr
         Assert.Null(finished.CanceledAt);
         Assert.Equal(101, finished.WinnerSteamId);
         Assert.Equal(0, (await dbAfter.GameServers.FindAsync(registered.ServerId))!.CurrentMatches);
+    }
+
+    [Theory]
+    [InlineData("match_failed", HttpStatusCode.OK)]
+    [InlineData("crashed", HttpStatusCode.BadRequest)]
+    public async Task MatchCancellation_AcceptsGameHostMatchFailureAndRejectsUnknownReasons(
+        string reason, HttpStatusCode expected)
+    {
+        using var client = CreateVpsClient();
+        var registered = await RegisterVpsAsync(client);
+        using var heartbeat = await HeartbeatAsync(client, registered.ServerId, registered.ApiToken, 1);
+        Assert.Equal(HttpStatusCode.OK, heartbeat.StatusCode);
+        var matchId = Guid.NewGuid();
+        using (var scope = _vpsFactory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Users.AddRange(
+                new User { SteamId = 101, AuthProvider = "steam", Username = "One" },
+                new User { SteamId = 202, AuthProvider = "steam", Username = "Two" });
+            db.Matches.Add(new Match { Id = matchId, ServerId = registered.ServerId,
+                Player1SteamId = 101, Player2SteamId = 202, ServerRegion = "EU" });
+            await db.SaveChangesAsync();
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/match/cancel")
+        {
+            Content = JsonContent.Create(new MatchCancelRequest(matchId, reason))
+        };
+        request.Headers.Authorization = new("Bearer", registered.ApiToken);
+        using var response = await client.SendAsync(request);
+        Assert.Equal(expected, response.StatusCode);
+
+        using var scopeAfter = _vpsFactory.Services.CreateScope();
+        var match = (await scopeAfter.ServiceProvider.GetRequiredService<AppDbContext>().Matches.FindAsync(matchId))!;
+        Assert.Equal(expected == HttpStatusCode.OK ? reason : null, match.CancelReason);
+        Assert.Null(match.WinnerSteamId);
     }
 
     [Fact]
