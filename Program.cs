@@ -894,7 +894,7 @@ app.MapPost("/match/cancel", async (MatchCancelRequest request, HttpContext cont
             !TimingSafeEquals(server.ApiTokenHash, tokenHash))
             return Results.Unauthorized();
         if (request.MatchId == Guid.Empty || request.Reason is not
-            ("unfilled" or "absent" or "host_restart" or "host_shutdown" or "content_unavailable"))
+            ("unfilled" or "absent" or "host_restart" or "host_shutdown" or "content_unavailable" or "match_failed"))
             return Results.BadRequest(new { error = "invalid_cancellation" });
         var match = await db.Matches.FindAsync(request.MatchId);
         if (match is null)
