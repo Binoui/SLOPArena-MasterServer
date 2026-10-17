@@ -220,6 +220,12 @@ source read and GHCR package-write access; direct runs use their own
 documented in [SlopArena's release pipeline](https://github.com/Binoui/SlopArena/blob/main/docs/systems/release-pipeline.md).
 Publication alone does not deploy the VPS or activate a Steam build.
 
+Routine Playtest deployment uses that coordinator's guarded VPS receiver, which
+takes a fresh off-host backup, applies zero-active-match/readiness checks, and
+prepares the release-specific private catalog environment. Steam default
+activation remains manual. The image commands below describe runtime mechanics;
+do not use them to bypass the coordinated or explicitly approved guarded path.
+
 The Docker context is an explicit source allowlist. It includes `Rooms/` alongside
 Chat, lobby, host, DTO and migration code; add newly required source directories
 to `.dockerignore` rather than broadening the context to runtime configuration or
@@ -253,9 +259,11 @@ docker run --rm --platform linux/amd64 --read-only \
 
 The self-contained EF bundle extracts to `/tmp/bundle`; the bounded tmpfs is
 the only writable path. The migration runner reads the connection variable
-without putting it in its command line. Then run the application image by its
-reported digest, supplying the complete VPS configuration externally and
-publishing port 8080.
+without putting it in its command line. The guarded deployment runs the
+application image by its reported digest, supplying complete VPS configuration
+externally. Port 8080 stays on the private container network behind Caddy;
+do not publish raw Master or `/owner` routes on the VPS. Read-only match logs
+use the private console and [SlopArena's operations skill](https://github.com/Binoui/SlopArena/blob/main/skills/sloparena-ops/SKILL.md).
 
 ## Architecture
 
