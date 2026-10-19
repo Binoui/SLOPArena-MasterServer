@@ -105,11 +105,11 @@ public sealed class OwnerObservationIntegrationTests : IDisposable
             await ConnectAsync(factory, unassociated.Token);
             var room = await leaderHub.InvokeAsync<RoomSnapshot>("CreateRoom", "Observation room");
             await memberHub.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
+            await leaderHub.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
+            await leaderHub.InvokeAsync<RoomSnapshot>("RoomChooseArena", "arena");
             await leaderHub.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
             await leaderHub.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
             await memberHub.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
-            await leaderHub.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
-            await leaderHub.InvokeAsync<RoomSnapshot>("RoomChooseArena", "arena");
             var globalMessage = await leaderHub.InvokeAsync<ChatMessage>("SendGlobal", "Owner-visible global");
 
             var serverId = Guid.NewGuid();

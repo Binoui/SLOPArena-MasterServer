@@ -1,3 +1,4 @@
+using MasterServer.Rooms;
 // MasterServer/Lobbies/HttpMatchLauncher.cs
 using System.Net.Http.Json;
 using System.Net.Http.Headers;
@@ -141,6 +142,8 @@ public sealed class HttpMatchLauncher : IMatchLauncher
         }
         if (_deployment.IsVps || config.RoomId is not null)
             body["admissionExpiresAtUtc"] = admissionDeadline;
+        if (config.Format != RoomFormats.Stock)
+            body["format"] = config.Format;
 
         var url = _deployment.IsVps
             ? _deployment.ControlUrl!
