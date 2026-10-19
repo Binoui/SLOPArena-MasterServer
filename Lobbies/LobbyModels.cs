@@ -1,3 +1,4 @@
+using MasterServer.Rooms;
 // MasterServer/Lobbies/LobbyModels.cs
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -45,7 +46,8 @@ public sealed record SteamMatchDescriptor(
     string ContentHash,
     DateTimeOffset AdmissionExpiresAtUtc)
 {
-    public const int Protocol = 10;
+    // 11: World Snapshot v2 and Match formats (ADR-0040 in the game repository).
+    public const int Protocol = 11;
 }
 
 
@@ -60,7 +62,8 @@ public sealed record MatchStartedConfig(
     Guid? RoomId = null,
     Guid MatchId = default,
     string? CatalogHash = null,
-    string? ServerAddress = null);
+    string? ServerAddress = null,
+    string Format = RoomFormats.Stock);
 
 /// <summary>
 /// Result of a player entering a GameServer. <c>Success</c> means a waiting

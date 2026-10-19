@@ -17,7 +17,12 @@ public sealed record RoomSnapshot(
     string? ArenaName,
     IReadOnlyList<string> AdmittedCharacters,
     IReadOnlyList<string> AdmittedArenas,
-    Guid? ActiveMatchId = null);
+    Guid? ActiveMatchId = null,
+    string Format = RoomFormats.Stock,
+    IReadOnlyList<RoomArcadeEntry>? AdmittedArcade = null);
+
+/// <summary>An Arcade format and the arena it plays on, admitted for Rooms (ADR-0040).</summary>
+public sealed record RoomArcadeEntry(string Format, string Arena);
 
 internal sealed record RoomObservationSnapshot(
     Guid Id,
@@ -32,7 +37,7 @@ internal sealed record RoomObservationSnapshot(
     Guid? ActiveMatchId);
 
 public sealed record RoomLaunchPreparation(Guid RoomId, Guid MatchId, string ArenaName,
-    IReadOnlyList<LobbyPlayer> Players);
+    IReadOnlyList<LobbyPlayer> Players, string Format = RoomFormats.Stock);
 
 
 public sealed record RoomSummary(

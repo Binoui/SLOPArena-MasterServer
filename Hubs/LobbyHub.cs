@@ -243,6 +243,10 @@ public sealed class LobbyHub : Hub
     public Task<RoomSnapshot> RoomChooseArena(string arena)
         => ApplyRoomPreparationAsync(playerId => _rooms.ChooseArena(playerId, arena));
 
+    /// <summary>The leader's pick: <c>stock</c> with a PvP Arena, or an admitted Arcade format and its Arena.</summary>
+    public Task<RoomSnapshot> RoomChoosePick(string format, string arena)
+        => ApplyRoomPreparationAsync(playerId => _rooms.ChoosePick(playerId, format, arena));
+
     private async Task<RoomSnapshot> ApplyRoomPreparationAsync(
         Func<long, RoomMutationResult> mutate, bool directoryChanged = false)
     {
@@ -306,7 +310,8 @@ public sealed class LobbyHub : Hub
                 var config = new MatchStartedConfig(server.Id, preparation.Players,
                     ArenaName: preparation.ArenaName, RoomId: roomId, MatchId: matchId,
                     CatalogHash: _rooms.CatalogHash,
-                    ServerAddress: _deployment.IsVps ? null : server.IpAddress);
+                    ServerAddress: _deployment.IsVps ? null : server.IpAddress,
+                    Format: preparation.Format);
                 var launch = await _launcher.LaunchAsync(config);
                 if (launch.MatchId != matchId ||
                     launch.Descriptor is { } descriptor && descriptor.MatchId != matchId)
@@ -386,6 +391,7 @@ public sealed class LobbyHub : Hub
 
     public async Task<RoomSnapshot> CreateRoom(string name)
     {
+        RequireRoomClientProtocol();
         await _chat.MembershipGate.WaitAsync(Context.ConnectionAborted);
         try
         {
@@ -416,6 +422,7 @@ public sealed class LobbyHub : Hub
 
     public async Task<RoomSnapshot> JoinRoom(Guid roomId)
     {
+        RequireRoomClientProtocol();
         await _chat.MembershipGate.WaitAsync(Context.ConnectionAborted);
         try
         {
@@ -473,6 +480,14 @@ public sealed class LobbyHub : Hub
         {
             _chat.MembershipGate.Release();
         }
+    }
+
+    /// <summary>Refuses Room entry from a build that doesn't speak this Master's Room flow.</summary>
+    private void RequireRoomClientProtocol()
+    {
+        var value = Context.GetHttpContext()?.Request.Query[RoomClientProtocol.QueryKey].ToString();
+        if (!RoomClientProtocol.IsCompatible(value, _deployment.IsVps))
+            throw new HubException("client_outdated: Update SLOPArena to create or join Rooms.");
     }
 
     private async Task<(long SteamId, string Name)> GetRoomPlayerAsync()

@@ -15,6 +15,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
     private static readonly IReadOnlyList<string> NoConnections = Array.Empty<string>();
     private readonly HashSet<string> _characters = LoadAdmission(configuration, "Room:AdmittedCharacters");
     private readonly HashSet<string> _arenas = LoadAdmission(configuration, "Room:AdmittedArenas");
+    private readonly HashSet<RoomArcadeEntry> _arcade = LoadArcadeAdmission(configuration, "Room:AdmittedArcade");
     public string? CatalogHash => configuration["Room:CatalogHash"];
     // Serializes match launch and terminal snapshots so stale updates cannot overtake a rematch.
     internal SemaphoreSlim MatchLifecycleGate { get; } = new(1, 1);
@@ -25,6 +26,20 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         if (values is not { Length: > 0 } || values.Any(string.IsNullOrWhiteSpace))
             throw new InvalidOperationException($"{key} must pin at least one admitted content ID.");
         return new HashSet<string>(values, StringComparer.Ordinal);
+    }
+
+    /// <summary>Arcade picks as <c>format:arena</c> entries; Rooms may admit none.</summary>
+    private static HashSet<RoomArcadeEntry> LoadArcadeAdmission(IConfiguration configuration, string key)
+    {
+        var entries = new HashSet<RoomArcadeEntry>();
+        foreach (var value in configuration.GetSection(key).Get<string[]>() ?? Array.Empty<string>())
+        {
+            var parts = value?.Split(':') ?? Array.Empty<string>();
+            if (parts.Length != 2 || !RoomFormats.IsArcade(parts[0]) || string.IsNullOrWhiteSpace(parts[1]))
+                throw new InvalidOperationException($"{key} entries must be <arcade format>:<arena>, not '{value}'.");
+            entries.Add(new RoomArcadeEntry(parts[0], parts[1]));
+        }
+        return entries;
     }
 
     private readonly object _gate = new();
@@ -200,14 +215,56 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
             return Changed(room, steamId);
         }
     }
-    public RoomMutationResult StartCharacterSelect(long steamId)
+    /// <summary>Opens Stage Select: a Room chooses what to play before anyone picks a fighter.</summary>
+    public RoomMutationResult StartStageSelect(long steamId)
     {
         lock (_gate)
         {
             var (room, error) = PrepareLocked(steamId, "Lobby", leaderOnly: true);
             if (error is not null) return error;
             if (room!.Members.Count < 2)
-                return Reject("room_not_ready: At least two members must join before Character Select.");
+                return Reject("room_not_ready: At least two members must join before Stage Select.");
+            room.Phase = "Stage Select";
+            return Changed(room, steamId);
+        }
+    }
+
+    public RoomMutationResult ChooseArena(long steamId, string arena)
+        => ChoosePick(steamId, RoomFormats.Stock, arena);
+
+    /// <summary>The leader's pick in Stage Select: a PvP stage, or an admitted Arcade format and its arena.</summary>
+    public RoomMutationResult ChoosePick(long steamId, string format, string arena)
+    {
+        lock (_gate)
+        {
+            var (room, error) = PrepareLocked(steamId, "Stage Select", leaderOnly: true);
+            if (error is not null) return error;
+            if (format == RoomFormats.Stock ? arena is null || !_arenas.Contains(arena)
+                : format is null || arena is null || !_arcade.Contains(new RoomArcadeEntry(format, arena)))
+                return Reject(format == RoomFormats.Stock
+                    ? "arena_not_admitted: Choose an admitted Arena."
+                    : "arcade_not_admitted: Choose an admitted Arcade format.");
+            if (!RoomFormats.Fits(format, room!.Members.Count))
+                return Reject("room_size: This format doesn't fit the Room's size.");
+            room.Format = format;
+            room.ArenaName = arena;
+            return Changed(room, steamId);
+        }
+    }
+
+    /// <summary>Opens Character Select once the leader has chosen what the Room plays.</summary>
+    public RoomMutationResult StartCharacterSelect(long steamId)
+    {
+        lock (_gate)
+        {
+            var (room, error) = PrepareLocked(steamId, "Stage Select", leaderOnly: true);
+            if (error is not null) return error;
+            if (room!.Members.Count < 2)
+                return Reject("room_not_ready: At least two members must stay for Character Select.");
+            if (room.ArenaName is null)
+                return Reject("room_not_ready: Choose an admitted Arena before Character Select.");
+            if (!RoomFormats.Fits(room.Format, room.Members.Count))
+                return Reject("room_size: The chosen format doesn't fit the Room's size.");
             room.Phase = "Character Select";
             return Changed(room, steamId);
         }
@@ -228,40 +285,12 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         }
     }
 
-    public RoomMutationResult StartStageSelect(long steamId)
-    {
-        lock (_gate)
-        {
-            var (room, error) = PrepareLocked(steamId, "Character Select", leaderOnly: true);
-            if (error is not null) return error;
-            if (room!.Members.Count < 2 || room.Members.Any(member => !member.LockedIn))
-                return Reject("room_not_ready: Two to four members must lock in admitted Characters first.");
-            room.Phase = "Stage Select";
-            return Changed(room, steamId);
-        }
-    }
-
-    public RoomMutationResult ChooseArena(long steamId, string arena)
-    {
-        lock (_gate)
-        {
-            var (room, error) = PrepareLocked(steamId, "Stage Select", leaderOnly: true);
-            if (error is not null) return error;
-            if (arena is null || !_arenas.Contains(arena))
-                return Reject("arena_not_admitted: Choose an admitted Arena.");
-            if (room!.Members.Count < 2 || room.Members.Any(member => !member.LockedIn))
-                return Reject("room_not_ready: Two to four members must remain locked in.");
-            room.ArenaName = arena;
-            return Changed(room, steamId);
-        }
-    }
-
     /// <summary>Freeze the current Room roster before host selection or network I/O.</summary>
     public RoomLaunchPreparation? BeginMatch(long steamId, out string? error)
     {
         lock (_gate)
         {
-            var (room, rejected) = PrepareLocked(steamId, "Stage Select", leaderOnly: true);
+            var (room, rejected) = PrepareLocked(steamId, "Character Select", leaderOnly: true);
             if (rejected is not null)
             {
                 error = rejected.Error;
@@ -281,7 +310,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
             var players = room.Members.Select((member, index) =>
                 new LobbyPlayer(member.SteamId, member.Name, member.CharacterSelection,
                     true, member.SteamId == room.LeaderSteamId, index + 1)).ToArray();
-            return new RoomLaunchPreparation(room.Id, matchId, room.ArenaName, players);
+            return new RoomLaunchPreparation(room.Id, matchId, room.ArenaName, players, room.Format);
         }
     }
 
@@ -305,7 +334,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
                 room.Phase != "Match Starting" || room.ActiveMatchId != matchId)
                 return null;
             room.ActiveMatchId = null;
-            room.Phase = "Stage Select";
+            room.Phase = "Character Select";
             return ToSnapshot(room);
         }
     }
@@ -360,13 +389,8 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
             {
                 ElectLeaderLocked(room);
             }
-            if (room.Phase != "In Match")
-            {
-                if (room.Members.Count < 2)
-                    ResetPreparationLocked(room);
-                else
-                    room.ArenaName = null;
-            }
+            if (room.Phase != "In Match" && room.Members.Count < 2)
+                ResetPreparationLocked(room);
 
             return new RoomMutationResult(room.Id, ToSnapshot(room), null, true, false, connections);
         }
@@ -433,8 +457,6 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         }
         if (room.Members.Count < 2)
             ResetPreparationLocked(room);
-        else
-            room.ArenaName = null;
 
         return new RoomMutationResult(room.Id, ToSnapshot(room), null, true, false,
             revokedConnections.Count == 0 ? NoConnections : revokedConnections.ToArray());
@@ -445,6 +467,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         room.Phase = "Lobby";
         room.ActiveMatchId = null;
         room.ArenaName = null;
+        room.Format = RoomFormats.Stock;
         foreach (var member in room.Members)
         {
             member.CharacterSelection = null;
@@ -502,7 +525,8 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         var members = ToMembers(room);
         return new RoomSnapshot(room.Id, room.Name, room.Phase, room.LeaderSteamId, members,
             members.Length, MaxMembers, room.Phase == "Lobby" && members.Length < MaxMembers,
-            room.ArenaName, _characters.ToArray(), _arenas.ToArray(), room.ActiveMatchId);
+            room.ArenaName, _characters.ToArray(), _arenas.ToArray(), room.ActiveMatchId,
+            room.Format, _arcade.ToArray());
     }
 
     private static RoomObservationSnapshot ToOwnerObservationSnapshot(Room room)
@@ -532,6 +556,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         public long? EmptySinceTimestamp { get; set; }
         public string Phase { get; set; } = "Lobby";
         public string? ArenaName { get; set; }
+        public string Format { get; set; } = RoomFormats.Stock;
         public Guid? ActiveMatchId { get; set; }
     }
 

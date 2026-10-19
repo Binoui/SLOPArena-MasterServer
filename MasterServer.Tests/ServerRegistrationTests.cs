@@ -527,9 +527,9 @@ public class ServerRegistrationTests : IClassFixture<WebApplicationFactory<Progr
     }
 
     [Theory]
-    [InlineData(9, false)]
-    [InlineData(10, true)]
-    public async Task VpsRegistration_EnforcesProtocol10Compatibility(int protocolVersion, bool accepted)
+    [InlineData(10, false)]
+    [InlineData(11, true)]
+    public async Task VpsRegistration_EnforcesProtocol11Compatibility(int protocolVersion, bool accepted)
     {
         using var client = CreateVpsClient();
         using var response = await PostVpsRegistrationAsync(

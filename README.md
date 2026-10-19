@@ -296,11 +296,18 @@ are owned by Master memory and do not reserve a GameHost or simulation slot.
 | `JoinRoom` | `roomId` | `RoomSnapshot`; joining an existing Room is idempotent for its current member |
 | `GetMyRoom` | none | This Steam identity's `RoomSnapshot`, or `null` |
 | `LeaveRoom` | none | no return; explicitly leaves the current Room |
-| `RoomStartCharacterSelect` | none | leader advances Lobby → Character Select (2–4 members) |
+| `RoomStartStageSelect` | none | leader advances Lobby → Stage Select (2–4 members) |
+| `RoomChooseArena` | admitted Arena name | leader sets a stock fight's Arena in Stage Select; does not launch a Match |
+| `RoomChoosePick` | format, Arena | leader sets `stock` with an admitted Arena, or an admitted Arcade format and its Arena |
+| `RoomStartCharacterSelect` | none | leader advances Stage Select → Character Select once an Arena is chosen |
 | `RoomSelectCharacter` | admitted Character selector | member locks in a Character in Character Select |
-| `RoomStartStageSelect` | none | leader advances after every member locks in |
-| `RoomChooseArena` | admitted Arena name | leader sets the Arena in Stage Select; does not launch a Match |
-| `RoomStartMatch` | none | leader allocates a compatible GameHost for a prepared Room and returns the Match route |
+| `RoomStartMatch` | none | leader allocates a compatible GameHost once every member locks in and returns the Match route |
+
+Clients connect to `/lobby?protocol=<n>` with their simulation protocol. `CreateRoom` and
+`JoinRoom` refuse a client whose protocol differs from Master's with `client_outdated`, so an
+outdated build keeps chat but cannot enter a Room flow it doesn't speak. The VPS requires the
+value; development also admits a missing value or the development protocol 0. See ADR-0040 in
+the game repository.
 
 `RoomDirectoryChanged` is a payload-free push to connected browser clients when
 a public Room summary changes (creation, membership, phase, leadership, expiry
@@ -308,10 +315,11 @@ or terminal return). Clients re-read `GetRooms`; it never carries chat, a Match
 descriptor or an unauthorized member roster. `RoomUpdated` remains Room-scoped.
 
 `RoomSummary` contains `id`, `name`, `phase`, `leaderSteamId`, `memberCount`, `capacity`, and
-`joinable`. `RoomSnapshot` adds `arenaName`, deployment-pinned `admittedCharacters` and
-`admittedArenas`, and ordered `members`; each member contains `steamId`, `name`, `isLeader`,
-`characterSelection`, and `lockedIn`. Phases are `Lobby`, `Character Select`,
-`Stage Select`, `Match Starting`, and `In Match`; snapshots also expose `activeMatchId`
+`joinable`. `RoomSnapshot` adds `arenaName`, the pick's `format` (`stock` or an Arcade format such as
+`slopball-coop`), deployment-pinned `admittedCharacters`, `admittedArenas` and `admittedArcade`
+(`{format, arena}` pairs), and ordered `members`; each member contains `steamId`, `name`, `isLeader`,
+`characterSelection`, and `lockedIn`. Phases are `Lobby`, `Stage Select`,
+`Character Select`, `Match Starting`, and `In Match`; snapshots also expose `activeMatchId`
 while launching/fighting. Only Lobby Rooms are joinable. Names are trimmed, literal text with
 1–24 valid Unicode scalar values; blank, malformed, control-bearing, and line-separator
 names are rejected; formatting controls are rejected except Unicode joiners. Duplicate
@@ -329,10 +337,11 @@ disconnected during an active Match retain their place until the Match terminate
 Explicit development GameHost-lobby membership cannot overlap a Room; production
 has no physical-lobby admission.
 Room preparation and broadcasts use the Room GUID, never a GameServer lobby. The leader
-advances phases; every member may lock in or change an admitted Character during Character
-Select. Stage Select requires 2–4 locked-in members. Only the leader may choose an admitted
-Arena. Room membership dropping below two resets preparation to Lobby and clears picks;
-other departures clear the Arena and require the leader to choose it again.
+advances phases and chooses what to play first: Stage Select opens with 2–4 members, only the
+leader may choose an admitted Arena, and Character Select opens once one is chosen. Every member
+may lock in or change an admitted Character during Character Select; `RoomStartMatch` requires
+2–4 locked-in members. Room membership dropping below two resets preparation to Lobby and
+clears picks; other departures keep the Arena and the remaining lock-ins.
 `RoomStartMatch` atomically freezes the selected roster; only its Room group receives
 the `MatchStarted` payload with a nonempty root `matchId`, the physical `serverId`,
 content map and Steam descriptor in VPS mode (development sends the selected
@@ -340,7 +349,7 @@ GameHost's `serverAddress` plus assigned UDP `matchPort`). When present, the
 Steam descriptor carries the same Match ID. Explicit development physical-lobby
 launches also carry the GameHost's root Match ID. The Match row records nullable
 `roomId` separately from physical `serverId` (older rows remain null). Launch
-failure returns to Stage Select with selections and Arena intact. A Room launch
+failure returns to Character Select with selections and Arena intact. A Room launch
 passes a 60-second admission deadline; an unfilled Match expires even if a
 failed launch could not deliver the abort command. Disconnected members are not
 pruned during an active Match. A GameHost result or cancellation updates only the
@@ -358,6 +367,9 @@ missed heartbeats. This uses the same idempotent terminal transition and
 preserves unrelated Rooms and chats.
 
 `Room:AdmittedCharacters` and `Room:AdmittedArenas` are deployment-pinned selectors.
+`Room:AdmittedArcade` lists Arcade picks as `<format>:<arena>` entries (default
+`slopball-coop:slopball`); a Room may admit none. Releases don't rewrite it yet, so the
+default applies unless the environment sets `Room__AdmittedArcade__*`.
 `Room:CatalogHash` defaults to the current cooked roster's 64-character GameHost
 content hash; update it with each accepted content release or override via
 `Room__CatalogHash` using the admitted GameHost's registered hash. Master filters

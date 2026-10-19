@@ -63,6 +63,9 @@ _Avoid_: server list
 **Matchmaking**:
 The planned process of pairing players into a match; not yet implemented — the server browser is the current entry point.
 
+**Stage Select**:
+The phase in which a Room's leader chooses the Arena. A Room enters it from Lobby, before Character Select.
+
 **Character Select**:
-The phase between lobby and match, entered when the host starts it, in which players lock in characters.
+The phase before a match in which players lock in characters. A Room enters it once its leader has chosen the Arena in Stage Select; a development GameHost lobby enters it when the host starts.
 _Avoid_: char select, pick phase

@@ -155,10 +155,11 @@ public sealed class RoomIntegrationTests : IDisposable
     }
 
     private async Task<HubConnection> ConnectAsync(
-        WebApplicationFactory<Program> factory, string token, Action<HubConnection>? beforeStart = null)
+        WebApplicationFactory<Program> factory, string token, Action<HubConnection>? beforeStart = null,
+        string hubPath = "lobby")
     {
         var connection = new HubConnectionBuilder()
-            .WithUrl(new Uri(factory.Server.BaseAddress, "lobby"), options =>
+            .WithUrl(new Uri(factory.Server.BaseAddress, hubPath), options =>
             {
                 options.Transports = HttpTransportType.LongPolling;
                 options.HttpMessageHandlerFactory = _ => factory.Server.CreateHandler();
@@ -282,20 +283,16 @@ public sealed class RoomIntegrationTests : IDisposable
     {
         var room = await leader.InvokeAsync<RoomSnapshot>("CreateRoom", name);
         await member.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
-        await leader.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
-        await leader.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
-        await member.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "FightGuy");
-        await leader.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
-        await leader.InvokeAsync<RoomSnapshot>("RoomChooseArena", "slop_pit");
+        await PrepareExistingRoomAsync(leader, member);
     }
 
     private static async Task PrepareExistingRoomAsync(HubConnection leader, HubConnection member)
     {
+        await leader.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
+        await leader.InvokeAsync<RoomSnapshot>("RoomChooseArena", "slop_pit");
         await leader.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
         await leader.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
         await member.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "FightGuy");
-        await leader.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
-        await leader.InvokeAsync<RoomSnapshot>("RoomChooseArena", "slop_pit");
     }
 
     private static async Task<HttpResponseMessage> ReportMatchResultAsync(
@@ -517,7 +514,7 @@ public sealed class RoomIntegrationTests : IDisposable
         Assert.Null((await stranger.InvokeAsync<ChatSnapshot>("GetChatState")).Server.RoomId);
     }
     [Fact]
-    public async Task RoomPreparationIsLeaderControlled_RoomScoped_AndRequiresAdmittedLockedRosterAndArena()
+    public async Task RoomPreparationIsLeaderControlled_RoomScoped_AndChoosesTheArenaBeforeFighters()
     {
         var (factory, client) = CreateFactory();
         var alice = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Alice"));
@@ -528,19 +525,27 @@ public sealed class RoomIntegrationTests : IDisposable
         var room = await alice.InvokeAsync<RoomSnapshot>("CreateRoom", "First");
         var other = await outsider.InvokeAsync<RoomSnapshot>("CreateRoom", "Other");
         var tooFew = await Assert.ThrowsAsync<HubException>(() =>
-            alice.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect"));
+            alice.InvokeAsync<RoomSnapshot>("RoomStartStageSelect"));
         Assert.Contains("two", tooFew.Message, StringComparison.OrdinalIgnoreCase);
         await bob.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
         await carol.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
 
         var denied = await Assert.ThrowsAsync<HubException>(() =>
-            bob.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect"));
+            bob.InvokeAsync<RoomSnapshot>("RoomStartStageSelect"));
         Assert.Contains("leader", denied.Message, StringComparison.OrdinalIgnoreCase);
+        var fightersFirst = await Assert.ThrowsAsync<HubException>(() =>
+            alice.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect"));
+        Assert.Contains("invalid_phase", fightersFirst.Message);
         Assert.Equal("Lobby", (await alice.InvokeAsync<RoomSnapshot>("GetMyRoom")).Phase);
-        var characterPush = WaitForPushAsync<RoomSnapshot>(bob, "RoomUpdated",
-            snapshot => snapshot.Phase == "Character Select");
-        await alice.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
-        Assert.Equal(room.Id, (await characterPush).Id);
+        var stagePush = WaitForPushAsync<RoomSnapshot>(bob, "RoomUpdated",
+            snapshot => snapshot.Phase == "Stage Select");
+        await alice.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
+        var stage = await stagePush;
+        Assert.Equal(room.Id, stage.Id);
+        Assert.Null(stage.ArenaName);
+        Assert.All(stage.Members, member => Assert.Null(member.CharacterSelection));
+        Assert.Contains("Manki", stage.AdmittedCharacters);
+        Assert.Contains("slop_pit", stage.AdmittedArenas);
         Assert.Equal("Lobby", (await outsider.InvokeAsync<RoomSnapshot>("GetMyRoom")).Phase);
         Assert.Empty((await outsider.InvokeAsync<RoomSnapshot>("GetMyRoom")).Members
             .Where(member => member.Name == "Alice"));
@@ -550,28 +555,12 @@ public sealed class RoomIntegrationTests : IDisposable
         Assert.Equal(other.Id, (await outsider.InvokeAsync<ChatSnapshot>("GetChatState")).Server.RoomId);
         Assert.Null((await newcomer.InvokeAsync<ChatSnapshot>("GetChatState")).Server.RoomId);
 
-        var invalid = await Assert.ThrowsAsync<HubException>(() =>
-            alice.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "unpublished"));
-        Assert.Contains("character", invalid.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.All((await alice.InvokeAsync<RoomSnapshot>("GetMyRoom")).Members,
-            member => Assert.False(member.LockedIn));
-        await alice.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
-        await bob.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "FightGuy");
-        var unlocked = await Assert.ThrowsAsync<HubException>(() =>
-            alice.InvokeAsync<RoomSnapshot>("RoomStartStageSelect"));
-        Assert.Contains("lock", unlocked.Message, StringComparison.OrdinalIgnoreCase);
-        await carol.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Wibou");
-        var stagePush = WaitForPushAsync<RoomSnapshot>(bob, "RoomUpdated",
-            snapshot => snapshot.Phase == "Stage Select");
-        await alice.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
-        var stage = await stagePush;
-        Assert.Equal(new[] { "Manki", "FightGuy", "Wibou" },
-            stage.Members.Select(member => member.CharacterSelection));
-        Assert.All(stage.Members, member => Assert.True(member.LockedIn));
-        Assert.Null(stage.ArenaName);
-        Assert.Contains("Manki", stage.AdmittedCharacters);
-        Assert.Contains("slop_pit", stage.AdmittedArenas);
-
+        var earlyFighter = await Assert.ThrowsAsync<HubException>(() =>
+            bob.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "FightGuy"));
+        Assert.Contains("invalid_phase", earlyFighter.Message);
+        var noArena = await Assert.ThrowsAsync<HubException>(() =>
+            alice.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect"));
+        Assert.Contains("arena", noArena.Message, StringComparison.OrdinalIgnoreCase);
         var deniedArena = await Assert.ThrowsAsync<HubException>(() =>
             bob.InvokeAsync<RoomSnapshot>("RoomChooseArena", "slop_pit"));
         Assert.Contains("leader", deniedArena.Message, StringComparison.OrdinalIgnoreCase);
@@ -583,15 +572,111 @@ public sealed class RoomIntegrationTests : IDisposable
             snapshot => snapshot.ArenaName == "slop_pit");
         await alice.InvokeAsync<RoomSnapshot>("RoomChooseArena", "slop_pit");
         Assert.Equal("slop_pit", (await arenaPush).ArenaName);
+        var deniedAdvance = await Assert.ThrowsAsync<HubException>(() =>
+            bob.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect"));
+        Assert.Contains("leader", deniedAdvance.Message, StringComparison.OrdinalIgnoreCase);
+        var characterPush = WaitForPushAsync<RoomSnapshot>(bob, "RoomUpdated",
+            snapshot => snapshot.Phase == "Character Select");
+        await alice.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
+        var characters = await characterPush;
+        Assert.Equal("slop_pit", characters.ArenaName);
+        Assert.All(characters.Members, member => Assert.False(member.LockedIn));
+        var arenaChange = await Assert.ThrowsAsync<HubException>(() =>
+            alice.InvokeAsync<RoomSnapshot>("RoomChooseArena", "slop_pit"));
+        Assert.Contains("invalid_phase", arenaChange.Message);
+
+        var invalid = await Assert.ThrowsAsync<HubException>(() =>
+            alice.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "unpublished"));
+        Assert.Contains("character", invalid.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.All((await alice.InvokeAsync<RoomSnapshot>("GetMyRoom")).Members,
+            member => Assert.False(member.LockedIn));
+        await alice.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
+        await bob.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "FightGuy");
+        var unlocked = await Assert.ThrowsAsync<HubException>(() =>
+            alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch"));
+        Assert.Contains("lock", unlocked.Message, StringComparison.OrdinalIgnoreCase);
+        await carol.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Wibou");
+        var locked = await alice.InvokeAsync<RoomSnapshot>("GetMyRoom");
+        Assert.Equal(new[] { "Manki", "FightGuy", "Wibou" },
+            locked.Members.Select(member => member.CharacterSelection));
+        Assert.All(locked.Members, member => Assert.True(member.LockedIn));
         Assert.Equal("Lobby", (await outsider.InvokeAsync<RoomSnapshot>("GetMyRoom")).Phase);
+
         await carol.InvokeAsync("LeaveRoom");
-        Assert.Null((await alice.InvokeAsync<RoomSnapshot>("GetMyRoom")).ArenaName);
+        var kept = await alice.InvokeAsync<RoomSnapshot>("GetMyRoom");
+        Assert.Equal("Character Select", kept.Phase);
+        Assert.Equal("slop_pit", kept.ArenaName);
+        Assert.All(kept.Members, member => Assert.True(member.LockedIn));
         await bob.InvokeAsync("LeaveRoom");
         var reset = await alice.InvokeAsync<RoomSnapshot>("GetMyRoom");
         Assert.Equal("Lobby", reset.Phase);
+        Assert.Null(reset.ArenaName);
         Assert.Null(reset.Members[0].CharacterSelection);
         Assert.False(reset.Members[0].LockedIn);
         Assert.True(reset.Joinable);
+    }
+
+    [Fact]
+    public async Task ArcadePickLaunchesItsFormatAndRejectsMismatchedPicks()
+    {
+        var host = new GameHostHandler();
+        var (factory, client) = CreateFactory(gameHost: host);
+        await RegisterCompatibleHostAsync(client, capacity: 1);
+        var leader = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Leader"));
+        var member = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Member"));
+        var room = await leader.InvokeAsync<RoomSnapshot>("CreateRoom", "Court");
+        await member.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
+        var stage = await leader.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
+        Assert.Contains(new RoomArcadeEntry(RoomFormats.SlopballCoop, "slopball"), stage.AdmittedArcade!);
+        Assert.Equal(RoomFormats.Stock, stage.Format);
+
+        var courtAsStock = await Assert.ThrowsAsync<HubException>(() =>
+            leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.Stock, "slopball"));
+        Assert.Contains("arena_not_admitted", courtAsStock.Message);
+        var coopOnStage = await Assert.ThrowsAsync<HubException>(() =>
+            leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.SlopballCoop, "slop_pit"));
+        Assert.Contains("arcade_not_admitted", coopOnStage.Message);
+        var unknown = await Assert.ThrowsAsync<HubException>(() =>
+            leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", "volleyball", "slopball"));
+        Assert.Contains("arcade_not_admitted", unknown.Message);
+        var notLeader = await Assert.ThrowsAsync<HubException>(() =>
+            member.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.SlopballCoop, "slopball"));
+        Assert.Contains("leader", notLeader.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null((await member.InvokeAsync<RoomSnapshot>("GetMyRoom")).ArenaName);
+
+        var picked = await leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.SlopballCoop, "slopball");
+        Assert.Equal((RoomFormats.SlopballCoop, "slopball"), (picked.Format, picked.ArenaName));
+        await leader.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
+        await leader.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
+        await member.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "FightGuy");
+        var started = await leader.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+        Assert.Equal((RoomFormats.SlopballCoop, "slopball"), (started.Format, started.ArenaName));
+        var body = Assert.Single(host.Starts);
+        Assert.Equal(RoomFormats.SlopballCoop, body.GetProperty("format").GetString());
+        Assert.Equal("slopball", body.GetProperty("arenaName").GetString());
+    }
+
+    [Fact]
+    public async Task RoomEntryRefusesAClientWhoseProtocolDiffers()
+    {
+        var (factory, client) = CreateFactory();
+        var outdated = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Outdated"),
+            hubPath: $"lobby?{RoomClientProtocol.QueryKey}=999");
+        var current = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Current"),
+            hubPath: $"lobby?{RoomClientProtocol.QueryKey}={SteamMatchDescriptor.Protocol}");
+        var development = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Development"),
+            hubPath: $"lobby?{RoomClientProtocol.QueryKey}=0");
+
+        var refused = await Assert.ThrowsAsync<HubException>(() =>
+            outdated.InvokeAsync<RoomSnapshot>("CreateRoom", "Old build"));
+        Assert.Contains("client_outdated", refused.Message);
+        var room = await current.InvokeAsync<RoomSnapshot>("CreateRoom", "New build");
+        var refusedJoin = await Assert.ThrowsAsync<HubException>(() =>
+            outdated.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id));
+        Assert.Contains("client_outdated", refusedJoin.Message);
+        var joined = await development.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
+        Assert.Equal(2, joined.MemberCount);
+        Assert.Null((await outdated.InvokeAsync<ChatSnapshot>("GetChatState")).Server.RoomId);
     }
 
     [Fact]
@@ -780,7 +865,7 @@ public sealed class RoomIntegrationTests : IDisposable
             () => eve.InvokeAsync<MatchStartedConfig>("RoomStartMatch"));
         Assert.Contains("gamehost_unavailable", noCapacity.Message);
         var retry = await eve.InvokeAsync<RoomSnapshot>("GetMyRoom");
-        Assert.Equal("Stage Select", retry.Phase);
+        Assert.Equal("Character Select", retry.Phase);
         Assert.Equal("slop_pit", retry.ArenaName);
         Assert.All(retry.Members, member => Assert.True(member.LockedIn));
         Assert.Equal(2, host.Starts.Count);
@@ -1019,17 +1104,17 @@ public sealed class RoomIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task RoomMatchStartRejectsNonleaderAndMissingArenaWithoutChangingPreparation()
+    public async Task RoomMatchStartRejectsNonleaderAndUnlockedRosterWithoutChangingPreparation()
     {
         var (factory, client) = CreateFactory();
         var leader = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Leader"));
         var member = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Member"));
         var room = await leader.InvokeAsync<RoomSnapshot>("CreateRoom", "Incomplete");
         await member.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
+        await leader.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
+        await leader.InvokeAsync<RoomSnapshot>("RoomChooseArena", "slop_pit");
         await leader.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
         await leader.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
-        await member.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "FightGuy");
-        await leader.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
 
         var unauthorized = await Assert.ThrowsAsync<HubException>(
             () => member.InvokeAsync<MatchStartedConfig>("RoomStartMatch"));
@@ -1038,9 +1123,9 @@ public sealed class RoomIntegrationTests : IDisposable
             () => leader.InvokeAsync<MatchStartedConfig>("RoomStartMatch"));
         Assert.Contains("room_not_ready", incomplete.Message);
         var unchanged = await member.InvokeAsync<RoomSnapshot>("GetMyRoom");
-        Assert.Equal("Stage Select", unchanged.Phase);
-        Assert.Null(unchanged.ArenaName);
-        Assert.All(unchanged.Members, player => Assert.True(player.LockedIn));
+        Assert.Equal("Character Select", unchanged.Phase);
+        Assert.Equal("slop_pit", unchanged.ArenaName);
+        Assert.Equal(new[] { true, false }, unchanged.Members.Select(player => player.LockedIn));
         using var scope = factory.Services.CreateScope();
         Assert.Empty(await scope.ServiceProvider.GetRequiredService<AppDbContext>().Matches.ToListAsync());
     }
@@ -1058,7 +1143,7 @@ public sealed class RoomIntegrationTests : IDisposable
             () => leader.InvokeAsync<MatchStartedConfig>("RoomStartMatch"));
         Assert.Contains("gamehost_start_failed", failed.Message);
         var restored = await member.InvokeAsync<RoomSnapshot>("GetMyRoom");
-        Assert.Equal("Stage Select", restored.Phase);
+        Assert.Equal("Character Select", restored.Phase);
         Assert.Equal("slop_pit", restored.ArenaName);
         Assert.Null(restored.ActiveMatchId);
         Assert.All(restored.Members, player => Assert.True(player.LockedIn));
@@ -1069,7 +1154,7 @@ public sealed class RoomIntegrationTests : IDisposable
         var incompatible = await Assert.ThrowsAsync<HubException>(
             () => leader.InvokeAsync<MatchStartedConfig>("RoomStartMatch"));
         Assert.Contains("gamehost_start_failed", incompatible.Message);
-        Assert.Equal("Stage Select", (await member.InvokeAsync<RoomSnapshot>("GetMyRoom")).Phase);
+        Assert.Equal("Character Select", (await member.InvokeAsync<RoomSnapshot>("GetMyRoom")).Phase);
         using (var scope = factory.Services.CreateScope())
             Assert.Empty(await scope.ServiceProvider.GetRequiredService<AppDbContext>().Matches.ToListAsync());
         host.ResponseCatalogHash = new string('a', 64);
@@ -1213,12 +1298,30 @@ public sealed class RoomIntegrationTests : IDisposable
         var (phaseSignal, phaseSubscription) = SubscribeSignal(outsider, "RoomDirectoryChanged");
         using (phaseSubscription)
         {
-            await alice.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
+            await alice.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
             await phaseSignal.WaitAsync(TimeSpan.FromSeconds(5));
         }
         var phaseSummary = Assert.Single(await outsider.InvokeAsync<RoomSummary[]>("GetRooms"));
-        Assert.Equal("Character Select", phaseSummary.Phase);
+        Assert.Equal("Stage Select", phaseSummary.Phase);
         Assert.Equal(5, Volatile.Read(ref changeCount));
+
+        var (arenaSignal, arenaSubscription) = SubscribeSignal(outsider, "RoomDirectoryChanged");
+        using (arenaSubscription)
+        {
+            await alice.InvokeAsync<RoomSnapshot>("RoomChooseArena", "slop_pit");
+            await Task.Delay(100);
+            Assert.False(arenaSignal.IsCompleted);
+        }
+        Assert.Equal(5, Volatile.Read(ref changeCount));
+
+        var (fighterPhaseSignal, fighterPhaseSubscription) = SubscribeSignal(outsider, "RoomDirectoryChanged");
+        using (fighterPhaseSubscription)
+        {
+            await alice.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
+            await fighterPhaseSignal.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        Assert.Equal("Character Select", Assert.Single(await outsider.InvokeAsync<RoomSummary[]>("GetRooms")).Phase);
+        Assert.Equal(6, Volatile.Read(ref changeCount));
 
         var (selectionSignal, selectionSubscription) = SubscribeSignal(outsider, "RoomDirectoryChanged");
         using (selectionSubscription)
@@ -1227,7 +1330,7 @@ public sealed class RoomIntegrationTests : IDisposable
             await Task.Delay(100);
             Assert.False(selectionSignal.IsCompleted);
         }
-        Assert.Equal(5, Volatile.Read(ref changeCount));
+        Assert.Equal(6, Volatile.Read(ref changeCount));
     }
 
     [Fact]
