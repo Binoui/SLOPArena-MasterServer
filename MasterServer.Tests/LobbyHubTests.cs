@@ -119,7 +119,9 @@ public class LobbyHubTests
                 Chat,
                 MasterServer.Configuration.MasterDeploymentOptions.Development,
                 Rooms,
-                Directory)
+                Directory,
+                new MatchCompletionCoordinator(Rooms, Directory, Mock.Of<IHubContext<LobbyHub>>(),
+                    Mock.Of<ILogger<MatchCompletionCoordinator>>()))
             {
                 Context = ctx.Object,
                 Clients = Clients.Object,

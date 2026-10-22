@@ -11,6 +11,8 @@ public sealed class RoomClientProtocolTests
     [InlineData("", false)]
     [InlineData("0", false)]
     [InlineData("9", false)]
+    [InlineData("11", false)]
+    [InlineData("12", false)]
     [InlineData("+10", false)]
     [InlineData("ten", false)]
     public void VpsRefusesMissingDevelopmentAndOtherProtocols(string? value, bool expected)

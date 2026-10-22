@@ -3,7 +3,7 @@ using MasterServer.Lobbies;
 namespace MasterServer.Rooms;
 
 public sealed record RoomMember(long SteamId, string Name, bool IsLeader,
-    string? CharacterSelection = null, bool LockedIn = false);
+    string? CharacterSelection = null, bool LockedIn = false, string Camp = "", byte Colour = 0);
 
 public sealed record RoomSnapshot(
     Guid Id,
@@ -19,10 +19,11 @@ public sealed record RoomSnapshot(
     IReadOnlyList<string> AdmittedArenas,
     Guid? ActiveMatchId = null,
     string Format = RoomFormats.Stock,
-    IReadOnlyList<RoomArcadeEntry>? AdmittedArcade = null);
+    IReadOnlyList<RoomArcadeEntry>? AdmittedArcade = null,
+    bool FriendlyFire = false, bool BallOnly = false);
 
 /// <summary>An Arcade format and the arena it plays on, admitted for Rooms (ADR-0040).</summary>
-public sealed record RoomArcadeEntry(string Format, string Arena);
+public sealed record RoomArcadeEntry(string Format, string Arena, string? Fighter = null);
 
 internal sealed record RoomObservationSnapshot(
     Guid Id,
@@ -37,7 +38,7 @@ internal sealed record RoomObservationSnapshot(
     Guid? ActiveMatchId);
 
 public sealed record RoomLaunchPreparation(Guid RoomId, Guid MatchId, string ArenaName,
-    IReadOnlyList<LobbyPlayer> Players, string Format = RoomFormats.Stock);
+    IReadOnlyList<LobbyPlayer> Players, string Format = RoomFormats.Stock, bool FriendlyFire = false, bool BallOnly = false);
 
 
 public sealed record RoomSummary(

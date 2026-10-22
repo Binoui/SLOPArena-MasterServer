@@ -22,7 +22,7 @@ public sealed record LobbyPlayer(
     [property: JsonPropertyName("characterSelection")] string? Character,
     bool LockedIn,
     bool IsHost,
-    int EntityId = 0);
+    int EntityId = 0, string Camp = "", byte Colour = 0);
 
 /// <summary>
 /// Full lobby membership snapshot pushed on any change via <c>LobbyUpdated</c>.
@@ -47,7 +47,9 @@ public sealed record SteamMatchDescriptor(
     DateTimeOffset AdmissionExpiresAtUtc)
 {
     // 11: World Snapshot v2 and Match formats (ADR-0040 in the game repository).
-    public const int Protocol = 11;
+    // 12: returning projectiles. 13: leader-selected co-op friendly fire at Match setup.
+    // 14: Versus Slopball camps, points and serves.
+    public const int Protocol = 15;
 }
 
 
@@ -63,7 +65,8 @@ public sealed record MatchStartedConfig(
     Guid MatchId = default,
     string? CatalogHash = null,
     string? ServerAddress = null,
-    string Format = RoomFormats.Stock);
+    string Format = RoomFormats.Stock,
+    bool FriendlyFire = false, bool BallOnly = false);
 
 /// <summary>
 /// Result of a player entering a GameServer. <c>Success</c> means a waiting

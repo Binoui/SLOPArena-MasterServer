@@ -119,6 +119,25 @@ public class HttpMatchLauncherTests
         .ToList();
 
     [Fact]
+    public async Task AbortAsync_VpsUsesPrivateControlUrlAndBearerForTheExactMatch()
+    {
+        var handler = new StubHandler();
+        var deployment = new MasterDeploymentOptions("vps", ServerId, "registration-key", "public.example", 9876,
+            new Uri("http://gameserver.internal:9876/match/start"), "match-control-key");
+        var db = SeedServer("attacker.example", 4321, "90293421017699331");
+        var launcher = CreateLauncher(db, new HttpClient(handler), deployment);
+        var matchId = Guid.NewGuid();
+        await launcher.AbortAsync(ServerId, matchId);
+        Assert.Equal("http://gameserver.internal:9876/match/abort", handler.RequestUri!.ToString());
+        Assert.Equal("Bearer", handler.Authorization!.Scheme);
+        Assert.Equal("match-control-key", handler.Authorization.Parameter);
+        using var body = JsonDocument.Parse(handler.RequestBody);
+        Assert.Equal(matchId, body.RootElement.GetProperty("matchId").GetGuid());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => launcher.AbortAsync(Guid.NewGuid(), matchId));
+        Assert.Equal(1, handler.AbortCalls);
+    }
+
+    [Fact]
     public async Task LaunchAsync_PostsRosterWithClassesAndEntityIds()
     {
         var handler = new StubHandler();

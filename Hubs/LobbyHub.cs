@@ -29,13 +29,14 @@ public sealed class LobbyHub : Hub
     private readonly ChatService _chat;
     private readonly MasterDeploymentOptions _deployment;
     private readonly RoomDirectoryNotifier _directory;
+    private readonly MatchCompletionCoordinator _completion;
     // One Master process serializes host selection with launch; the persisted open rows
     // arbitrate capacity after each release. A replicated Master needs DB reservation.
     private static readonly SemaphoreSlim RoomLaunchGate = new(1, 1);
 
     public LobbyHub(LobbyManager lobbies, AppDbContext db, IMatchLauncher launcher,
         ILogger<LobbyHub> logger, ChatService chat, MasterDeploymentOptions deployment, RoomManager rooms,
-        RoomDirectoryNotifier directory)
+        RoomDirectoryNotifier directory, MatchCompletionCoordinator completion)
     {
         _lobbies = lobbies;
         _rooms = rooms;
@@ -45,6 +46,7 @@ public sealed class LobbyHub : Hub
         _chat = chat;
         _deployment = deployment;
         _directory = directory;
+        _completion = completion;
     }
 
     public override async Task OnConnectedAsync()
@@ -247,6 +249,52 @@ public sealed class LobbyHub : Hub
     public Task<RoomSnapshot> RoomChoosePick(string format, string arena)
         => ApplyRoomPreparationAsync(playerId => _rooms.ChoosePick(playerId, format, arena));
 
+    public Task<RoomSnapshot> RoomSetFriendlyFire(bool enabled)
+        => ApplyRoomPreparationAsync(playerId => _rooms.SetFriendlyFire(playerId, enabled));
+
+    public Task<RoomSnapshot> RoomSetBallOnly(bool enabled)
+        => ApplyRoomPreparationAsync(playerId => _rooms.SetBallOnly(playerId, enabled));
+
+    public Task<RoomSnapshot> RoomSelectColour(byte colour)
+        => ApplyRoomPreparationAsync(playerId => _rooms.SelectColour(playerId, colour));
+
+    public Task<RoomSnapshot> RoomSelectCamp(string camp)
+        => ApplyRoomPreparationAsync(playerId => _rooms.SelectCamp(playerId, camp));
+
+    /// <summary>The current Room leader stops this co-op Match without leaving the Room.</summary>
+    public async Task RoomReturnToLobby(Guid matchId)
+    {
+        if (!TryGetSteamId(out var playerId))
+            throw new HubException("Authenticated identity missing.");
+        await _completion.RunExclusiveAsync(async () =>
+        {
+            var room = _rooms.GetMyRoom(playerId);
+            if (room is null || _rooms.GetRoomId(Context.ConnectionId) != room.Id)
+                throw new HubException("not_in_room: Join a Room first.");
+            if (room.LeaderSteamId != playerId)
+                throw new HubException("not_leader: Only the Room leader can return the group to the lobby.");
+            if (matchId == Guid.Empty || room.ActiveMatchId != matchId || room.Phase != "In Match" ||
+                !RoomFormats.IsArcade(room.Format))
+                throw new HubException("invalid_match: This Slopball Match is no longer active in your Room.");
+            var match = await _db.Matches.SingleOrDefaultAsync(row => row.Id == matchId &&
+                row.RoomId == room.Id && row.ServerId != null && row.EndedAt == null && row.CanceledAt == null);
+            if (match is null)
+                throw new HubException("invalid_match: This Match is no longer active.");
+            try
+            {
+                await _launcher.AbortAsync(match.ServerId!.Value, matchId);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception, "Could not stop co-op Match {MatchId} for its leader", matchId);
+                throw new HubException("gamehost_stop_failed: Could not stop the Match. Retry returning to the lobby.");
+            }
+            await _completion.CancelOpenMatchesUnderGateAsync(_db, match.ServerId.Value,
+                "leader_returned_to_lobby", matchId);
+            return true;
+        }, Context.ConnectionAborted);
+    }
+
     private async Task<RoomSnapshot> ApplyRoomPreparationAsync(
         Func<long, RoomMutationResult> mutate, bool directoryChanged = false)
     {
@@ -311,7 +359,7 @@ public sealed class LobbyHub : Hub
                     ArenaName: preparation.ArenaName, RoomId: roomId, MatchId: matchId,
                     CatalogHash: _rooms.CatalogHash,
                     ServerAddress: _deployment.IsVps ? null : server.IpAddress,
-                    Format: preparation.Format);
+                    Format: preparation.Format, FriendlyFire: preparation.FriendlyFire, BallOnly: preparation.BallOnly);
                 var launch = await _launcher.LaunchAsync(config);
                 if (launch.MatchId != matchId ||
                     launch.Descriptor is { } descriptor && descriptor.MatchId != matchId)

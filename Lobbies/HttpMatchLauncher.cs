@@ -18,6 +18,9 @@ public interface IMatchLauncher
     /// authoritative content map emitted by the GameServer.
     /// </summary>
     Task<MatchLaunchResult> LaunchAsync(MatchStartedConfig config);
+
+    /// <summary>Stops only the named Match through its GameHost's existing control endpoint.</summary>
+    Task AbortAsync(Guid serverId, Guid matchId);
 }
 
 /// <summary>
@@ -57,6 +60,17 @@ public sealed class HttpMatchLauncher : IMatchLauncher
 
     public async Task<MatchLaunchResult> LaunchAsync(MatchStartedConfig config)
     {
+        if (config.FriendlyFire && config.Format != RoomFormats.SlopballCoop)
+            throw new InvalidOperationException("Friendly fire is a co-op Slopball rule.");
+        if (config.Format == RoomFormats.SlopballVersus
+            ? config.Players.Count is not (2 or 4) || config.Players.Any(p => p.Camp is not ("teal" or "clay"))
+                || config.Players.Count(p => p.Camp == "teal") != config.Players.Count / 2
+            : config.BallOnly || config.Players.Any(p => !string.IsNullOrEmpty(p.Camp)))
+            throw new InvalidOperationException("Invalid Versus Slopball camps or Ball only rule.");
+        if (RoomFormats.IsCourse(config.Format) && (config.Players.Any(p => p.Colour > 3 || p.EntityId <= 0 || p.EntityId >= 128)
+            || config.Players.Select(p => p.Colour).Distinct().Count() != config.Players.Count
+            || config.Players.Select(p => p.Character).Distinct().Count() != 1))
+            throw new InvalidOperationException("Invalid course fighter or colours.");
         if (_deployment.IsVps && config.ServerId != _deployment.ApprovedHostId)
             throw new InvalidOperationException("Only the provisioned GameServer can launch VPS matches.");
         var server = await _db.GameServers.FindAsync(config.ServerId);
@@ -130,6 +144,8 @@ public sealed class HttpMatchLauncher : IMatchLauncher
                     // MatchStartRequestCodec reads it verbatim (issue #7).
                     characterClass = p.Character,
                     entityId = p.EntityId,
+                    camp = p.Camp,
+                    colour = p.Colour,
                 })
                 .ToArray(),
         };
@@ -144,6 +160,10 @@ public sealed class HttpMatchLauncher : IMatchLauncher
             body["admissionExpiresAtUtc"] = admissionDeadline;
         if (config.Format != RoomFormats.Stock)
             body["format"] = config.Format;
+        if (config.Format == RoomFormats.SlopballCoop)
+            body["friendlyFire"] = config.FriendlyFire;
+        if (config.Format == RoomFormats.SlopballVersus)
+            body["ballOnly"] = config.BallOnly;
 
         var url = _deployment.IsVps
             ? _deployment.ControlUrl!
@@ -197,16 +217,7 @@ public sealed class HttpMatchLauncher : IMatchLauncher
             {
                 try
                 {
-                    using var abort = new HttpRequestMessage(HttpMethod.Post, new Uri(url, "/match/abort"))
-                    {
-                        Content = JsonContent.Create(new { matchId })
-                    };
-                    if (_deployment.IsVps)
-                        abort.Headers.Authorization =
-                            new AuthenticationHeaderValue("Bearer", _deployment.MatchControlKey!);
-                    using var aborted = await _http.SendAsync(abort);
-                    if (!aborted.IsSuccessStatusCode)
-                        _logger.LogWarning("GameHost did not acknowledge abort for match {MatchId}.", matchId);
+                    await AbortAsync(config.ServerId, matchGuid);
                 }
                 catch (Exception)
                 {
@@ -222,6 +233,28 @@ public sealed class HttpMatchLauncher : IMatchLauncher
             }
             throw;
         }
+    }
+
+    public async Task AbortAsync(Guid serverId, Guid matchId)
+    {
+        if (matchId == Guid.Empty)
+            throw new ArgumentException("A Match identity is required.", nameof(matchId));
+        if (_deployment.IsVps && serverId != _deployment.ApprovedHostId)
+            throw new InvalidOperationException("Only the provisioned GameServer can stop VPS matches.");
+        var server = await _db.GameServers.FindAsync(serverId)
+            ?? throw new InvalidOperationException("The Match's GameServer is no longer registered.");
+        var url = _deployment.IsVps
+            ? new Uri(_deployment.ControlUrl!, "/match/abort")
+            : new Uri($"http://{server.IpAddress}:{server.Port}/match/abort");
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = JsonContent.Create(new { matchId })
+        };
+        if (_deployment.IsVps)
+            request.Headers.Authorization =
+                new AuthenticationHeaderValue("Bearer", _deployment.MatchControlKey!);
+        using var response = await _http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
     }
 
     private sealed class MatchStartResponse

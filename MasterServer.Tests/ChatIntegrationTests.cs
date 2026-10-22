@@ -47,6 +47,8 @@ public class ChatIntegrationTests : IDisposable
     private sealed record ServerRegisterResponse(Guid ServerId, string ApiToken);
     private sealed class FakeMatchLauncher : IMatchLauncher
     {
+        public Task AbortAsync(Guid serverId, Guid matchId) => Task.CompletedTask;
+
         public Task<MatchLaunchResult> LaunchAsync(MatchStartedConfig config)
             => Task.FromResult(new MatchLaunchResult(
                 9877,

@@ -528,8 +528,10 @@ public class ServerRegistrationTests : IClassFixture<WebApplicationFactory<Progr
 
     [Theory]
     [InlineData(10, false)]
-    [InlineData(11, true)]
-    public async Task VpsRegistration_EnforcesProtocol11Compatibility(int protocolVersion, bool accepted)
+    [InlineData(11, false)]
+    [InlineData(12, false)]
+    [InlineData(SteamMatchDescriptor.Protocol, true)]
+    public async Task VpsRegistration_EnforcesCurrentProtocolCompatibility(int protocolVersion, bool accepted)
     {
         using var client = CreateVpsClient();
         using var response = await PostVpsRegistrationAsync(

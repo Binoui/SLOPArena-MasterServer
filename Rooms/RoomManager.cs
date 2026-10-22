@@ -35,9 +35,14 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         foreach (var value in configuration.GetSection(key).Get<string[]>() ?? Array.Empty<string>())
         {
             var parts = value?.Split(':') ?? Array.Empty<string>();
-            if (parts.Length != 2 || !RoomFormats.IsArcade(parts[0]) || string.IsNullOrWhiteSpace(parts[1]))
+            if (parts.Length is not (2 or 3) || !RoomFormats.IsArcade(parts[0]) || string.IsNullOrWhiteSpace(parts[1])
+                || (RoomFormats.IsCourse(parts[0]) ? parts.Length != 3 || string.IsNullOrWhiteSpace(parts[2])
+                    || !(configuration.GetSection("Room:AdmittedCharacters").Get<string[]>() ?? []).Contains(parts[2]) : parts.Length != 2))
                 throw new InvalidOperationException($"{key} entries must be <arcade format>:<arena>, not '{value}'.");
-            entries.Add(new RoomArcadeEntry(parts[0], parts[1]));
+            var entry = new RoomArcadeEntry(parts[0], parts[1], parts.Length == 3 ? parts[2] : null);
+            if (entries.Any(e => e.Format == entry.Format && e.Arena == entry.Arena))
+                throw new InvalidOperationException("Duplicate Arcade admission.");
+            entries.Add(entry);
         }
         return entries;
     }
@@ -229,8 +234,45 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         }
     }
 
+    /// <summary>Lobby-only co-op preference; launch freezes it for the Match.</summary>
+    public RoomMutationResult SetFriendlyFire(long steamId, bool enabled)
+    {
+        lock (_gate)
+        {
+            var (room, error) = PrepareLocked(steamId, "Lobby", leaderOnly: true);
+            if (error is not null) return error;
+            room!.FriendlyFire = enabled;
+            return Changed(room, steamId);
+        }
+    }
+
     public RoomMutationResult ChooseArena(long steamId, string arena)
         => ChoosePick(steamId, RoomFormats.Stock, arena);
+
+    public RoomMutationResult SetBallOnly(long steamId, bool enabled)
+    {
+        lock (_gate)
+        {
+            var (room, error) = PrepareLocked(steamId, "Lobby", leaderOnly: true);
+            if (error is not null) return error;
+            room!.BallOnly = enabled;
+            return Changed(room, steamId);
+        }
+    }
+
+    public RoomMutationResult SelectCamp(long steamId, string camp)
+    {
+        lock (_gate)
+        {
+            var (room, error) = PrepareLocked(steamId, "Character Select", leaderOnly: false);
+            if (error is not null) return error;
+            if (room!.Format != RoomFormats.SlopballVersus || camp is not ("teal" or "clay"))
+                return Reject("invalid_camp: Choose Teal or Clay in Versus Slopball.");
+            var member = FindMember(room, steamId);
+            if (member.Camp != camp) { member.Camp = camp; member.LockedIn = false; }
+            return Changed(room, steamId);
+        }
+    }
 
     /// <summary>The leader's pick in Stage Select: a PvP stage, or an admitted Arcade format and its arena.</summary>
     public RoomMutationResult ChoosePick(long steamId, string format, string arena)
@@ -240,7 +282,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
             var (room, error) = PrepareLocked(steamId, "Stage Select", leaderOnly: true);
             if (error is not null) return error;
             if (format == RoomFormats.Stock ? arena is null || !_arenas.Contains(arena)
-                : format is null || arena is null || !_arcade.Contains(new RoomArcadeEntry(format, arena)))
+                : format is null || arena is null || !_arcade.Any(e => e.Format == format && e.Arena == arena))
                 return Reject(format == RoomFormats.Stock
                     ? "arena_not_admitted: Choose an admitted Arena."
                     : "arcade_not_admitted: Choose an admitted Arcade format.");
@@ -248,6 +290,14 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
                 return Reject("room_size: This format doesn't fit the Room's size.");
             room.Format = format;
             room.ArenaName = arena;
+            for (int i = 0; i < room.Members.Count; i++)
+            {
+                room.Members[i].Camp = format == RoomFormats.SlopballVersus ? (i % 2 == 0 ? "teal" : "clay") : "";
+                room.Members[i].LockedIn = false;
+                room.Members[i].Colour = (byte)i;
+                if (RoomFormats.IsCourse(format))
+                    room.Members[i].CharacterSelection = _arcade.Single(e => e.Format == format && e.Arena == arena).Fighter;
+            }
             return Changed(room, steamId);
         }
     }
@@ -278,10 +328,30 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
             if (error is not null) return error;
             if (character is null || !_characters.Contains(character))
                 return Reject("character_not_admitted: Choose an admitted Character.");
+            if (RoomFormats.IsCourse(room!.Format) && character != _arcade.Single(e => e.Format == room.Format && e.Arena == room.ArenaName).Fighter)
+                return Reject("course_fighter: This course sets the fighter; choose a colour and lock in.");
             var member = FindMember(room!, steamId);
             member.CharacterSelection = character;
             member.LockedIn = true;
             return Changed(room!, steamId);
+        }
+    }
+
+    public RoomMutationResult SelectColour(long steamId, byte colour)
+    {
+        lock (_gate)
+        {
+            var (room, error) = PrepareLocked(steamId, "Character Select", leaderOnly: false);
+            if (error is not null) return error;
+            if (!RoomFormats.IsCourse(room!.Format) || colour > 3) return Reject("invalid_colour: Choose a course colour.");
+            var member = FindMember(room, steamId);
+            if (member.Colour != colour)
+            {
+                var other = room.Members.FirstOrDefault(m => m.Colour == colour);
+                if (other != null) { other.Colour = member.Colour; other.LockedIn = false; }
+                member.Colour = colour; member.LockedIn = false;
+            }
+            return Changed(room, steamId);
         }
     }
 
@@ -304,13 +374,22 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
                 return null;
             }
             var matchId = Guid.NewGuid();
+            if (!RoomFormats.Fits(room.Format, room.Members.Count) || room.Format == RoomFormats.SlopballVersus
+                && (room.Members.Any(m => m.Camp is not ("teal" or "clay"))
+                    || room.Members.Count(m => m.Camp == "teal") != room.Members.Count / 2))
+            { error = "unbalanced_camps: Versus Slopball needs equal Teal and Clay camps."; return null; }
+            if (RoomFormats.IsCourse(room.Format) && (room.Members.Select(m => m.Colour).Distinct().Count() != room.Members.Count
+                || room.Members.Any(m => m.CharacterSelection != _arcade.Single(e => e.Format == room.Format && e.Arena == room.ArenaName).Fighter)))
+            { error = "course_roster: Lock in the course fighter and distinct colours."; return null; }
             room.ActiveMatchId = matchId;
             room.Phase = "Match Starting";
             error = null;
             var players = room.Members.Select((member, index) =>
                 new LobbyPlayer(member.SteamId, member.Name, member.CharacterSelection,
-                    true, member.SteamId == room.LeaderSteamId, index + 1)).ToArray();
-            return new RoomLaunchPreparation(room.Id, matchId, room.ArenaName, players, room.Format);
+                    true, member.SteamId == room.LeaderSteamId, index + 1, member.Camp, member.Colour)).ToArray();
+            return new RoomLaunchPreparation(room.Id, matchId, room.ArenaName, players, room.Format,
+                room.Format == RoomFormats.SlopballCoop && room.FriendlyFire,
+                room.Format == RoomFormats.SlopballVersus && room.BallOnly);
         }
     }
 
@@ -455,7 +534,8 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
             room.EmptySinceTimestamp = null;
             ElectLeaderLocked(room);
         }
-        if (room.Members.Count < 2)
+        if (room.Members.Count < 2 || room.Phase is "Stage Select" or "Character Select"
+            && !RoomFormats.Fits(room.Format, room.Members.Count))
             ResetPreparationLocked(room);
 
         return new RoomMutationResult(room.Id, ToSnapshot(room), null, true, false,
@@ -472,6 +552,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         {
             member.CharacterSelection = null;
             member.LockedIn = false;
+            member.Camp = "";
         }
     }
 
@@ -526,7 +607,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         return new RoomSnapshot(room.Id, room.Name, room.Phase, room.LeaderSteamId, members,
             members.Length, MaxMembers, room.Phase == "Lobby" && members.Length < MaxMembers,
             room.ArenaName, _characters.ToArray(), _arenas.ToArray(), room.ActiveMatchId,
-            room.Format, _arcade.ToArray());
+            room.Format, _arcade.ToArray(), room.FriendlyFire, room.BallOnly);
     }
 
     private static RoomObservationSnapshot ToOwnerObservationSnapshot(Room room)
@@ -540,7 +621,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
     private static RoomMember[] ToMembers(Room room)
         => room.Members
             .Select(member => new RoomMember(member.SteamId, member.Name,
-                member.SteamId == room.LeaderSteamId, member.CharacterSelection, member.LockedIn))
+                member.SteamId == room.LeaderSteamId, member.CharacterSelection, member.LockedIn, member.Camp, member.Colour))
             .ToArray();
 
     private static RoomSummary ToSummary(Room room)
@@ -557,6 +638,8 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         public string Phase { get; set; } = "Lobby";
         public string? ArenaName { get; set; }
         public string Format { get; set; } = RoomFormats.Stock;
+        public bool FriendlyFire { get; set; }
+        public bool BallOnly { get; set; }
         public Guid? ActiveMatchId { get; set; }
     }
 
@@ -567,5 +650,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         public long? DisconnectedAtTimestamp { get; set; }
         public string? CharacterSelection { get; set; }
         public bool LockedIn { get; set; }
+        public string Camp { get; set; } = "";
+        public byte Colour { get; set; }
     }
 }

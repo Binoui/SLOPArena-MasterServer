@@ -217,6 +217,8 @@ public sealed class RoomIntegrationTests : IDisposable
         public List<JsonElement> Starts { get; } = new();
         public List<Uri> StartUris { get; } = new();
         public List<Uri> HealthUris { get; } = new();
+        public List<Guid> Aborts { get; } = new();
+        public HttpStatusCode AbortStatus { get; set; } = HttpStatusCode.OK;
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
@@ -230,7 +232,11 @@ public sealed class RoomIntegrationTests : IDisposable
                 return new HttpResponseMessage(HealthStatus);
             }
             if (request.RequestUri.AbsolutePath == "/match/abort")
-                return new HttpResponseMessage(HttpStatusCode.OK);
+            {
+                using var abort = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+                Aborts.Add(abort.RootElement.GetProperty("matchId").GetGuid());
+                return new HttpResponseMessage(AbortStatus);
+            }
             StartUris.Add(request.RequestUri);
             using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
             Starts.Add(body.RootElement.Clone());
@@ -279,17 +285,20 @@ public sealed class RoomIntegrationTests : IDisposable
         return await client.SendAsync(request);
     }
 
-    private static async Task PrepareMatchAsync(HubConnection leader, HubConnection member, string name)
+    private static async Task PrepareMatchAsync(HubConnection leader, HubConnection member, string name,
+        string format = RoomFormats.Stock)
     {
         var room = await leader.InvokeAsync<RoomSnapshot>("CreateRoom", name);
         await member.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
-        await PrepareExistingRoomAsync(leader, member);
+        await PrepareExistingRoomAsync(leader, member, format);
     }
 
-    private static async Task PrepareExistingRoomAsync(HubConnection leader, HubConnection member)
+    private static async Task PrepareExistingRoomAsync(HubConnection leader, HubConnection member,
+        string format = RoomFormats.Stock)
     {
         await leader.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
-        await leader.InvokeAsync<RoomSnapshot>("RoomChooseArena", "slop_pit");
+        await leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", format,
+            format == RoomFormats.Stock ? "slop_pit" : "slopball");
         await leader.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
         await leader.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
         await member.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "FightGuy");
@@ -657,6 +666,37 @@ public sealed class RoomIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task VersusCampAndBallOnlyChangesReachBothThePushAndTheGameHost()
+    {
+        var host = new GameHostHandler();
+        var (factory, client) = CreateFactory(gameHost: host);
+        await RegisterCompatibleHostAsync(client, capacity: 1);
+        var leader = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Leader"));
+        var member = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Member"));
+        var room = await leader.InvokeAsync<RoomSnapshot>("CreateRoom", "Versus court");
+        await member.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
+        await leader.InvokeAsync<RoomSnapshot>("RoomSetBallOnly", true);
+        await PrepareExistingRoomAsync(leader, member, RoomFormats.SlopballVersus);
+        var changed = await leader.InvokeAsync<RoomSnapshot>("RoomSelectCamp", "clay");
+        Assert.False(changed.Members[0].LockedIn);
+        await leader.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
+        var unbalanced = await Assert.ThrowsAsync<HubException>(() => leader.InvokeAsync<MatchStartedConfig>("RoomStartMatch"));
+        Assert.Contains("unbalanced_camps", unbalanced.Message);
+        await member.InvokeAsync<RoomSnapshot>("RoomSelectCamp", "teal");
+        await member.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "FightGuy");
+        var started = await leader.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+        Assert.Equal(RoomFormats.SlopballVersus, started.Format);
+        Assert.True(started.BallOnly);
+        Assert.Equal(new[] { "clay", "teal" }, started.Players.Select(p => p.Camp));
+        var body = Assert.Single(host.Starts);
+        Assert.True(body.GetProperty("ballOnly").GetBoolean());
+        Assert.Equal(new[] { "clay", "teal" }, body.GetProperty("players").EnumerateArray().Select(p => p.GetProperty("camp").GetString()));
+        await leader.InvokeAsync("RoomReturnToLobby", started.MatchId);
+        var returned = await member.InvokeAsync<RoomSnapshot>("GetMyRoom");
+        Assert.Equal(room.Id, returned.Id); Assert.Equal("Lobby", returned.Phase); Assert.True(returned.BallOnly);
+    }
+
+    [Fact]
     public async Task RoomEntryRefusesAClientWhoseProtocolDiffers()
     {
         var (factory, client) = CreateFactory();
@@ -888,6 +928,140 @@ public sealed class RoomIntegrationTests : IDisposable
         var third = await eve.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
         Assert.NotEqual(first.MatchId, third.MatchId);
         Assert.Equal(registered.ServerId, third.ServerId);
+    }
+
+    [Fact]
+    public async Task FriendlyFireDefaultsOffIsLeaderControlledAndReachesTheMatchAndGameHost()
+    {
+        var host = new GameHostHandler();
+        var (factory, client) = CreateFactory(gameHost: host);
+        await RegisterCompatibleHostAsync(client);
+        var alice = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Alice"));
+        var bob = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Bob"));
+        var room = await alice.InvokeAsync<RoomSnapshot>("CreateRoom", "Volleyball rules");
+        Assert.False(room.FriendlyFire);
+        await bob.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
+        var rejected = await Assert.ThrowsAsync<HubException>(() => bob.InvokeAsync("RoomSetFriendlyFire", true));
+        Assert.Contains("not_leader", rejected.Message);
+        var push = WaitForPushAsync<RoomSnapshot>(bob, "RoomUpdated", r => r.Id == room.Id && r.FriendlyFire);
+        Assert.True((await alice.InvokeAsync<RoomSnapshot>("RoomSetFriendlyFire", true)).FriendlyFire);
+        Assert.True((await push).FriendlyFire);
+        await PrepareExistingRoomAsync(alice, bob, RoomFormats.SlopballCoop);
+        var starting = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+        Assert.True(starting.FriendlyFire);
+        Assert.True(Assert.Single(host.Starts).GetProperty("friendlyFire").GetBoolean());
+        var inMatch = await Assert.ThrowsAsync<HubException>(() => alice.InvokeAsync("RoomSetFriendlyFire", false));
+        Assert.Contains("invalid_phase", inMatch.Message);
+        Assert.True((await bob.InvokeAsync<RoomSnapshot>("GetMyRoom")).FriendlyFire);
+
+        await alice.InvokeAsync("RoomReturnToLobby", starting.MatchId);
+        Assert.True((await bob.InvokeAsync<RoomSnapshot>("GetMyRoom")).FriendlyFire);
+        Assert.False((await alice.InvokeAsync<RoomSnapshot>("RoomSetFriendlyFire", false)).FriendlyFire);
+        await PrepareExistingRoomAsync(alice, bob, RoomFormats.SlopballCoop);
+        var rematch = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+        Assert.False(rematch.FriendlyFire);
+        Assert.False(host.Starts.Last().GetProperty("friendlyFire").GetBoolean());
+    }
+
+    [Fact]
+    public async Task VolleyballFriendlyFirePreferenceDoesNotChangeAStockFight()
+    {
+        var host = new GameHostHandler();
+        var (factory, client) = CreateFactory(gameHost: host);
+        await RegisterCompatibleHostAsync(client);
+        var alice = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Alice"));
+        var bob = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Bob"));
+        var room = await alice.InvokeAsync<RoomSnapshot>("CreateRoom", "Stock Room");
+        await bob.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
+        await alice.InvokeAsync<RoomSnapshot>("RoomSetFriendlyFire", true);
+        await PrepareExistingRoomAsync(alice, bob);
+        var match = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+        Assert.Equal(RoomFormats.Stock, match.Format);
+        Assert.False(match.FriendlyFire);
+        Assert.False(Assert.Single(host.Starts).TryGetProperty("friendlyFire", out _));
+    }
+
+    [Fact]
+    public async Task LeaderReturnStopsOnlyTheCurrentCoopMatchAndKeepsTheRoomChatAndRematch()
+    {
+        var host = new GameHostHandler();
+        var (factory, client) = CreateFactory(gameHost: host);
+        await RegisterCompatibleHostAsync(client, capacity: 2);
+        var alice = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Alice"));
+        var bob = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Bob"));
+        var carol = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Carol"));
+        var dan = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Dan"));
+        await PrepareMatchAsync(alice, bob, "Co-op Room", RoomFormats.SlopballCoop);
+        await PrepareMatchAsync(carol, dan, "Other Room");
+        var coop = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+        var other = await carol.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+        var roomId = coop.RoomId!.Value;
+        var chat = await alice.InvokeAsync<ChatMessage>("SendServer", roomId, "Keep our Room");
+
+        var notLeader = await Assert.ThrowsAsync<HubException>(() => bob.InvokeAsync("RoomReturnToLobby", coop.MatchId));
+        Assert.Contains("not_leader", notLeader.Message);
+        var wrongRoom = await Assert.ThrowsAsync<HubException>(() => carol.InvokeAsync("RoomReturnToLobby", coop.MatchId));
+        Assert.Contains("invalid_match", wrongRoom.Message);
+        Assert.Empty(host.Aborts);
+
+        var leaderReturn = WaitForPushAsync<MatchAbortedNotice>(alice, "MatchAborted", n => n.MatchId == coop.MatchId);
+        var memberReturn = WaitForPushAsync<MatchAbortedNotice>(bob, "MatchAborted", n => n.MatchId == coop.MatchId);
+        var roomReturn = WaitForPushAsync<RoomSnapshot>(bob, "RoomUpdated", r => r.Id == roomId && r.Phase == "Lobby");
+        var reply = await alice.InvokeCoreAsync<object?>("RoomReturnToLobby", new object?[] { coop.MatchId });
+        Assert.Null(reply);
+        Assert.Equal(coop.MatchId, Assert.Single(host.Aborts));
+        Assert.Equal("leader_returned_to_lobby", (await leaderReturn).Reason);
+        Assert.Equal("leader_returned_to_lobby", (await memberReturn).Reason);
+        var returned = await roomReturn;
+        Assert.Null(returned.ActiveMatchId);
+        Assert.Equal(new[] { "Alice", "Bob" }, returned.Members.Select(m => m.Name));
+        Assert.All(returned.Members, m => Assert.False(m.LockedIn));
+        var chatState = await bob.InvokeAsync<ChatSnapshot>("GetChatState");
+        Assert.Equal(roomId, chatState.Server.RoomId);
+        Assert.Contains(chatState.Server.Messages, m => m.MessageId == chat.MessageId);
+
+        await PrepareExistingRoomAsync(alice, bob, RoomFormats.SlopballCoop);
+        var rematch = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+        Assert.NotEqual(coop.MatchId, rematch.MatchId);
+        var stale = await Assert.ThrowsAsync<HubException>(() => alice.InvokeAsync("RoomReturnToLobby", coop.MatchId));
+        Assert.Contains("invalid_match", stale.Message);
+        Assert.Single(host.Aborts);
+        Assert.Equal(rematch.MatchId, (await bob.InvokeAsync<RoomSnapshot>("GetMyRoom")).ActiveMatchId);
+        Assert.Equal(other.MatchId, (await dan.InvokeAsync<RoomSnapshot>("GetMyRoom")).ActiveMatchId);
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var canceled = await db.Matches.FindAsync(coop.MatchId);
+        Assert.NotNull(canceled!.CanceledAt);
+        Assert.Null(canceled.EndedAt);
+        Assert.Null(canceled.WinnerSteamId);
+        Assert.Equal("leader_returned_to_lobby", canceled.CancelReason);
+    }
+
+    [Fact]
+    public async Task FailedLeaderReturnKeepsTheMatchActiveAndAllowsRetry()
+    {
+        var host = new GameHostHandler();
+        var (factory, client) = CreateFactory(gameHost: host);
+        await RegisterCompatibleHostAsync(client);
+        var alice = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Alice"));
+        var bob = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Bob"));
+        await PrepareMatchAsync(alice, bob, "Co-op Room", RoomFormats.SlopballCoop);
+        var match = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+        host.AbortStatus = HttpStatusCode.ServiceUnavailable;
+        var failed = await Assert.ThrowsAsync<HubException>(() => alice.InvokeAsync("RoomReturnToLobby", match.MatchId));
+        Assert.Contains("gamehost_stop_failed", failed.Message);
+        var active = await bob.InvokeAsync<RoomSnapshot>("GetMyRoom");
+        Assert.Equal("In Match", active.Phase);
+        Assert.Equal(match.MatchId, active.ActiveMatchId);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var row = await scope.ServiceProvider.GetRequiredService<AppDbContext>().Matches.FindAsync(match.MatchId);
+            Assert.Null(row!.CanceledAt);
+        }
+        host.AbortStatus = HttpStatusCode.OK;
+        await alice.InvokeAsync("RoomReturnToLobby", match.MatchId);
+        Assert.Equal("Lobby", (await bob.InvokeAsync<RoomSnapshot>("GetMyRoom")).Phase);
+        Assert.Equal(new[] { match.MatchId, match.MatchId }, host.Aborts);
     }
 
     [Fact]
