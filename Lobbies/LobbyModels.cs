@@ -49,7 +49,8 @@ public sealed record SteamMatchDescriptor(
     // 11: World Snapshot v2 and Match formats (ADR-0040 in the game repository).
     // 12: returning projectiles. 13: leader-selected co-op friendly fire at Match setup.
     // 14: Versus Slopball camps, points and serves.
-    public const int Protocol = 15;
+    // 16: match content pins the exact baked arena digest alongside the character catalog.
+    public const int Protocol = 16;
 }
 
 

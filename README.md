@@ -122,8 +122,8 @@ literal.
 
 In VPS mode, `/servers/register` requires the provisioned host GUID,
 `Authorization: Bearer <ApprovedHost:RegistrationKey>`, canonical decimal-string
-GameHost `steamId`, `protocolVersion: 6`, nonempty per-process `instanceId` GUID,
-and lowercase SHA-256 `catalogHash` of the admitted immutable content map.
+GameHost `steamId`, `protocolVersion: 16`, nonempty per-process `instanceId` GUID,
+and lowercase SHA-256 `catalogHash` of the schema-1 characters-only content map.
 Master ignores request IP/UDP address and official flag. A heartbeat with a
 changed identity or catalog hash immediately makes the old browser entry
 ineligible. A fresh registration under the same host GUID pins the change,
@@ -137,12 +137,21 @@ complete VPS matches.
 
 Master creates the authoritative Match row and roster before its private
 `POST /match/start`, passing the registered catalog hash as the exact expected
-content identity. GameHost rejects a changed local map before allocation and
-responds with cooked content, the matching digest and its own verified Steam
+character identity. GameHost rejects a changed local catalog before allocation and
+responds with `actualCatalogHash`, schema-2 content and its per-match `contentHash`.
+The content includes an `arena` record with the requested name and SHA-256 of the
+exact baked `.arena` bytes. Master checks the arena name, canonical content JSON
+hash, catalog echo and current host identity, then forwards that JSON unchanged.
+GameHost also returns its own verified Steam
 identity. Only that roster receives a `MatchStarted.descriptor` (`steam-p2p`,
-host identity, GUID, virtual port 0, protocol 6, content digest, admission
+host identity, GUID, virtual port 0, protocol 16, per-match content digest, admission
 deadline); old clients are denied a VPS lobby slot. GameHost controls admission
 and authoritative simulation.
+Development Room launches validate the same arena and separate catalog echo,
+while retaining their explicit UDP control protocol. Clients verify the exact
+local arena bytes before prediction or Ready on either transport. Deploy client,
+GameServer and Master together for protocol 16; acceptance still requires a
+two-account Steam countdown, match and rematch pass.
 It reports normal results once, or calls authenticated `POST /match/cancel`
 with `unfilled`, `absent`, `host_restart`, `host_shutdown` or
 `content_unavailable`. Cancellation records reason/time with no winner/MMR,

@@ -240,13 +240,15 @@ public sealed class RoomIntegrationTests : IDisposable
             StartUris.Add(request.RequestUri);
             using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
             Starts.Add(body.RootElement.Clone());
+            var content = ArenaMatchContentFixture.Create(body.RootElement.GetProperty("arenaName").GetString()!);
             return new HttpResponseMessage(Fail ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK)
             {
                 Content = JsonContent.Create(new
                 {
                     port = 25000 + Starts.Count,
-                    contentHash = ResponseCatalogHash,
-                    content = new { schemaVersion = 1, entries = Array.Empty<object>() }
+                    actualCatalogHash = ResponseCatalogHash,
+                    contentHash = ArenaMatchContentFixture.Hash(content),
+                    content
                 })
             };
         }

@@ -45,7 +45,12 @@ public class HttpMatchLauncherTests
         public string ResponseSteamId { get; set; } = "90293421017699331";
         public int ResponseProtocolVersion { get; set; } = SteamMatchDescriptor.Protocol;
         public int AbortCalls { get; private set; }
-        public string ResponseBody { get; set; } = """{"port":9877,"content":{"schemaVersion":1,"entries":[]}}""";
+        public string? ResponseBody { get; set; }
+        public string? ResponseArena { get; set; }
+        public string? ResponseDigest { get; set; }
+        public string ResponseCatalogHash { get; set; } = new string('a', 64);
+        public bool TamperContentHash { get; set; }
+        public Action? OnStart { get; set; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken ct)
@@ -58,22 +63,27 @@ public class HttpMatchLauncherTests
             if (request.RequestUri?.AbsolutePath == "/match/abort")
                 AbortCalls++;
             var response = ResponseBody;
-            if (SteamResponse && request.RequestUri?.AbsolutePath == "/match/start")
+            if (request.RequestUri?.AbsolutePath == "/match/start")
+                OnStart?.Invoke();
+            if (response == null && request.RequestUri?.AbsolutePath == "/match/start")
             {
                 using var doc = JsonDocument.Parse(RequestBody);
+                var content = ArenaMatchContentFixture.Create(ResponseArena ?? doc.RootElement.GetProperty("arenaName").GetString()!, ResponseDigest);
                 response = JsonSerializer.Serialize(new
                 {
                     matchId = doc.RootElement.GetProperty("matchId").GetString(),
                     serverSteamId = ResponseSteamId,
                     virtualPort = 0,
                     protocolVersion = ResponseProtocolVersion,
-                    contentHash = new string('a', 64),
-                    content = new { schemaVersion = 1, entries = Array.Empty<object>() }
+                    port = SteamResponse ? 0 : 9877,
+                    actualCatalogHash = ResponseCatalogHash,
+                    contentHash = TamperContentHash ? new string('f', 64) : ArenaMatchContentFixture.Hash(content),
+                    content
                 });
             }
             return Task.FromResult(new HttpResponseMessage(Status)
             {
-                Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json"),
+                Content = new StringContent(response ?? "{}", System.Text.Encoding.UTF8, "application/json"),
             });
         }
     }
@@ -113,6 +123,105 @@ public class HttpMatchLauncherTests
         new LobbyPlayer(202, "Bob", "FightGuy", true, false, 2),
     };
 
+    [Fact]
+    public async Task LaunchRejectsMissingArenaBeforeAllocation()
+    {
+        using var db = SeedServer("127.0.0.1", 9876);
+        var handler = new StubHandler();
+        var launcher = CreateLauncher(db, new HttpClient(handler), MasterDeploymentOptions.Development);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => launcher.LaunchAsync(new MatchStartedConfig(
+            ServerId, TwoPlayerRoster())));
+        Assert.Contains("arena", error.Message);
+        Assert.Null(handler.RequestUri);
+        Assert.Empty(db.Matches);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LaunchRejectsArenaLessMatchContent(bool steam)
+    {
+        var handler = new StubHandler
+        {
+            SteamResponse = steam,
+            ResponseBody = JsonSerializer.Serialize(new { port = 9877, contentHash = new string('a', 64),
+                content = new { schemaVersion = 1, entries = Array.Empty<object>() } })
+        };
+        using var db = SeedServer("127.0.0.1", 9876, steam ? "90293421017699331" : null);
+        db.GameServers.Single().CatalogHash = new string('a', 64);
+        await db.SaveChangesAsync();
+        var deployment = steam ? new MasterDeploymentOptions("vps", ServerId, "registration-key", "public.example", 9876,
+            new Uri("http://gameserver.internal:9876/match/start"), "match-control-key") : MasterDeploymentOptions.Development;
+        var launcher = CreateLauncher(db, new HttpClient(handler), deployment);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => launcher.LaunchAsync(new MatchStartedConfig(
+            ServerId, TwoPlayerRoster(), ArenaName: "slop_pit", RoomId: Guid.NewGuid(), CatalogHash: new string('a', 64))));
+        Assert.Empty(db.Matches);
+        Assert.Equal(1, handler.AbortCalls);
+    }
+
+    [Theory]
+    [InlineData(false, "arena")]
+    [InlineData(true, "arena")]
+    [InlineData(false, "digest")]
+    [InlineData(true, "digest")]
+    [InlineData(false, "hash")]
+    [InlineData(true, "hash")]
+    [InlineData(false, "catalog")]
+    [InlineData(true, "catalog")]
+    [InlineData(false, "instance")]
+    [InlineData(true, "instance")]
+    [InlineData(false, "heartbeat")]
+    [InlineData(true, "heartbeat")]
+    [InlineData(false, "registered-catalog")]
+    [InlineData(true, "registered-catalog")]
+    public async Task LaunchRejectsMismatchedContentAndStaleHost(bool steam, string mismatch)
+    {
+        using var db = SeedServer("127.0.0.1", 9876, steam ? "90293421017699331" : null);
+        var server = db.GameServers.Single();
+        server.CatalogHash = new string('a', 64);
+        server.ProtocolVersion = SteamMatchDescriptor.Protocol;
+        await db.SaveChangesAsync();
+        var handler = new StubHandler { SteamResponse = steam };
+        if (mismatch == "arena") handler.ResponseArena = "other_arena";
+        if (mismatch == "digest") handler.ResponseDigest = new string('C', 64);
+        if (mismatch == "hash") handler.TamperContentHash = true;
+        if (mismatch == "catalog") handler.ResponseCatalogHash = new string('b', 64);
+        handler.OnStart = () =>
+        {
+            if (mismatch == "instance") server.InstanceId = Guid.NewGuid();
+            if (mismatch == "heartbeat") server.LastHeartbeat = DateTime.UtcNow.AddMinutes(-1);
+            if (mismatch == "registered-catalog") server.CatalogHash = new string('b', 64);
+            db.SaveChanges();
+        };
+        var deployment = steam ? new MasterDeploymentOptions("vps", ServerId, "registration-key", "public.example", 9876,
+            new Uri("http://gameserver.internal:9876/match/start"), "match-control-key") : MasterDeploymentOptions.Development;
+        var launcher = CreateLauncher(db, new HttpClient(handler), deployment);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => launcher.LaunchAsync(new MatchStartedConfig(
+            ServerId, TwoPlayerRoster(), ArenaName: "slop_pit", RoomId: Guid.NewGuid(), CatalogHash: new string('a', 64))));
+        Assert.Empty(db.Matches);
+        Assert.Equal(1, handler.AbortCalls);
+    }
+
+    [Fact]
+    public async Task DevelopmentRoomLaunchKeepsCatalogPinAndForwardsArenaBytes()
+    {
+        using var db = SeedServer("127.0.0.1", 9876);
+        db.GameServers.Single().CatalogHash = new string('a', 64);
+        db.GameServers.Single().ProtocolVersion = SteamMatchDescriptor.Protocol;
+        await db.SaveChangesAsync();
+        var handler = new StubHandler();
+        var launcher = CreateLauncher(db, new HttpClient(handler), MasterDeploymentOptions.Development);
+        var launch = await launcher.LaunchAsync(new MatchStartedConfig(ServerId, TwoPlayerRoster(), ArenaName: "slop_pit",
+            RoomId: Guid.NewGuid(), CatalogHash: new string('a', 64)));
+        Assert.Null(launch.Descriptor);
+        Assert.Equal(9877, launch.MatchPort);
+        Assert.Equal(ArenaMatchContentFixture.Create("slop_pit").GetRawText(), launch.Content.GetRawText());
+        Assert.Equal(new string('a', 64), db.GameServers.Single().CatalogHash);
+        using var body = JsonDocument.Parse(handler.RequestBody);
+        Assert.Equal(new string('a', 64), body.RootElement.GetProperty("catalogHash").GetString());
+        Assert.NotEqual(new string('a', 64), ArenaMatchContentFixture.Hash(launch.Content));
+    }
+
     /// <summary>A roster of <paramref name="count"/> locked-in players with 1-based entity IDs.</summary>
     private static List<LobbyPlayer> Roster(int count) => Enumerable.Range(1, count)
         .Select(i => new LobbyPlayer(100L + i, $"P{i}", "Manki", true, i == 1, i))
@@ -149,7 +258,7 @@ public class HttpMatchLauncherTests
 
         Assert.Equal(9877, launch.MatchPort);
         Assert.Equal(JsonValueKind.Object, launch.Content.ValueKind);
-        Assert.Equal(1, launch.Content.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(2, launch.Content.GetProperty("schemaVersion").GetInt32());
         Assert.Equal("http://127.0.0.1:9876/match/start", handler.RequestUri!.ToString());
         Assert.Null(handler.Authorization);
 
@@ -201,9 +310,10 @@ public class HttpMatchLauncherTests
         Assert.Equal(result.Descriptor.MatchId, Assert.Single(db.Matches).Id);
         Assert.Equal(SteamMatchDescriptor.Protocol, result.Descriptor.ProtocolVersion);
         Assert.Equal(0, result.Descriptor.VirtualPort);
-        Assert.Equal(new string('a', 64), result.Descriptor.ContentHash);
+        Assert.Equal(ArenaMatchContentFixture.Hash(result.Content), result.Descriptor.ContentHash);
+        Assert.NotEqual(new string('a', 64), result.Descriptor.ContentHash);
         using var posted = JsonDocument.Parse(handler.RequestBody);
-        Assert.Equal(result.Descriptor.ContentHash, posted.RootElement.GetProperty("catalogHash").GetString());
+        Assert.Equal(new string('a', 64), posted.RootElement.GetProperty("catalogHash").GetString());
     }
 
     [Fact]
