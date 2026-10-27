@@ -246,8 +246,8 @@ public sealed class LobbyHub : Hub
         => ApplyRoomPreparationAsync(playerId => _rooms.ChooseArena(playerId, arena));
 
     /// <summary>The leader's pick: <c>stock</c> with a PvP Arena, or an admitted Arcade format and its Arena.</summary>
-    public Task<RoomSnapshot> RoomChoosePick(string format, string arena)
-        => ApplyRoomPreparationAsync(playerId => _rooms.ChoosePick(playerId, format, arena));
+    public Task<RoomSnapshot> RoomChoosePick(string format, string arena, string mayhemFriendlyFire = "shoves")
+        => ApplyRoomPreparationAsync(playerId => _rooms.ChoosePick(playerId, format, arena, mayhemFriendlyFire));
 
     public Task<RoomSnapshot> RoomSetFriendlyFire(bool enabled)
         => ApplyRoomPreparationAsync(playerId => _rooms.SetFriendlyFire(playerId, enabled));

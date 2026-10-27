@@ -64,7 +64,7 @@ public sealed class HttpMatchLauncher : IMatchLauncher
     {
         if (string.IsNullOrWhiteSpace(config.ArenaName))
             throw new InvalidOperationException("A Match requires an explicit arena name.");
-        if (config.FriendlyFire && config.Format != RoomFormats.SlopballCoop)
+        if (!RoomFormats.AdmitsFriendlyFire(config.Format, config.FriendlyFire))
             throw new InvalidOperationException("Friendly fire is a co-op Slopball rule.");
         if (config.Format == RoomFormats.SlopballVersus
             ? config.Players.Count is not (2 or 4) || config.Players.Any(p => p.Camp is not ("teal" or "clay"))
@@ -167,7 +167,7 @@ public sealed class HttpMatchLauncher : IMatchLauncher
         }
         if (config.Format != RoomFormats.Stock)
             body["format"] = config.Format;
-        if (config.Format == RoomFormats.SlopballCoop)
+        if (config.Format is RoomFormats.SlopballCoop or RoomFormats.MankiMayhem)
             body["friendlyFire"] = config.FriendlyFire;
         if (config.Format == RoomFormats.SlopballVersus)
             body["ballOnly"] = config.BallOnly;

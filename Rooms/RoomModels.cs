@@ -20,7 +20,7 @@ public sealed record RoomSnapshot(
     Guid? ActiveMatchId = null,
     string Format = RoomFormats.Stock,
     IReadOnlyList<RoomArcadeEntry>? AdmittedArcade = null,
-    bool FriendlyFire = false, bool BallOnly = false);
+    bool FriendlyFire = false, bool BallOnly = false, string MayhemFriendlyFire = "shoves");
 
 /// <summary>An Arcade format and the arena it plays on, admitted for Rooms (ADR-0040).</summary>
 public sealed record RoomArcadeEntry(string Format, string Arena, string? Fighter = null);
@@ -38,7 +38,7 @@ internal sealed record RoomObservationSnapshot(
     Guid? ActiveMatchId);
 
 public sealed record RoomLaunchPreparation(Guid RoomId, Guid MatchId, string ArenaName,
-    IReadOnlyList<LobbyPlayer> Players, string Format = RoomFormats.Stock, bool FriendlyFire = false, bool BallOnly = false);
+    IReadOnlyList<LobbyPlayer> Players, string Format = RoomFormats.Stock, string FriendlyFire = "off", bool BallOnly = false);
 
 
 public sealed record RoomSummary(

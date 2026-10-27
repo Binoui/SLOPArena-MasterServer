@@ -50,7 +50,9 @@ public sealed record SteamMatchDescriptor(
     // 12: returning projectiles. 13: leader-selected co-op friendly fire at Match setup.
     // 14: Versus Slopball camps, points and serves.
     // 16: match content pins the exact baked arena digest alongside the character catalog.
-    public const int Protocol = 16;
+    // 20: Mayhem online and the three-value friendly-fire start contract.
+    // 22: JUMP! rings and BREAK OUT! runtime solids, snapshot 12 and World Frame 7.
+    public const int Protocol = 22;
 }
 
 
@@ -67,7 +69,7 @@ public sealed record MatchStartedConfig(
     string? CatalogHash = null,
     string? ServerAddress = null,
     string Format = RoomFormats.Stock,
-    bool FriendlyFire = false, bool BallOnly = false);
+    string FriendlyFire = "off", bool BallOnly = false);
 
 /// <summary>
 /// Result of a player entering a GameServer. <c>Success</c> means a waiting

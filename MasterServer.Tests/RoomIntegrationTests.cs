@@ -300,7 +300,7 @@ public sealed class RoomIntegrationTests : IDisposable
     {
         await leader.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
         await leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", format,
-            format == RoomFormats.Stock ? "slop_pit" : "slopball");
+            format == RoomFormats.Stock ? "slop_pit" : format == RoomFormats.MankiMayhem ? "manki_mayhem" : "slopball", "shoves");
         await leader.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
         await leader.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
         await member.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "FightGuy");
@@ -642,20 +642,20 @@ public sealed class RoomIntegrationTests : IDisposable
         Assert.Equal(RoomFormats.Stock, stage.Format);
 
         var courtAsStock = await Assert.ThrowsAsync<HubException>(() =>
-            leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.Stock, "slopball"));
+            leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.Stock, "slopball", "shoves"));
         Assert.Contains("arena_not_admitted", courtAsStock.Message);
         var coopOnStage = await Assert.ThrowsAsync<HubException>(() =>
-            leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.SlopballCoop, "slop_pit"));
+            leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.SlopballCoop, "slop_pit", "shoves"));
         Assert.Contains("arcade_not_admitted", coopOnStage.Message);
         var unknown = await Assert.ThrowsAsync<HubException>(() =>
-            leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", "volleyball", "slopball"));
+            leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", "volleyball", "slopball", "shoves"));
         Assert.Contains("arcade_not_admitted", unknown.Message);
         var notLeader = await Assert.ThrowsAsync<HubException>(() =>
-            member.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.SlopballCoop, "slopball"));
+            member.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.SlopballCoop, "slopball", "shoves"));
         Assert.Contains("leader", notLeader.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Null((await member.InvokeAsync<RoomSnapshot>("GetMyRoom")).ArenaName);
 
-        var picked = await leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.SlopballCoop, "slopball");
+        var picked = await leader.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.SlopballCoop, "slopball", "shoves");
         Assert.Equal((RoomFormats.SlopballCoop, "slopball"), (picked.Format, picked.ArenaName));
         await leader.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
         await leader.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
@@ -932,6 +932,41 @@ public sealed class RoomIntegrationTests : IDisposable
         Assert.Equal(registered.ServerId, third.ServerId);
     }
 
+    [Theory]
+    [InlineData("off")]
+    [InlineData("shoves")]
+    [InlineData("on")]
+    public async Task MayhemPickProjectsItsRuleToTheGameHostAndBothClients(string rule)
+    {
+        var host = new GameHostHandler();
+        var (factory, client) = CreateFactory(gameHost: host);
+        await RegisterCompatibleHostAsync(client);
+        var alice = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Alice"));
+        var bob = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Bob"));
+        var room = await alice.InvokeAsync<RoomSnapshot>("CreateRoom", "Mayhem");
+        Assert.Equal("shoves", room.MayhemFriendlyFire);
+        await bob.InvokeAsync<RoomSnapshot>("JoinRoom", room.Id);
+        await alice.InvokeAsync<RoomSnapshot>("RoomSetFriendlyFire", true);
+        await alice.InvokeAsync<RoomSnapshot>("RoomStartStageSelect");
+        var denied = await Assert.ThrowsAsync<HubException>(() => bob.InvokeAsync<RoomSnapshot>(
+            "RoomChoosePick", RoomFormats.MankiMayhem, "manki_mayhem", rule));
+        Assert.Contains("not_leader", denied.Message);
+        var picked = await alice.InvokeAsync<RoomSnapshot>("RoomChoosePick", RoomFormats.MankiMayhem, "manki_mayhem", rule);
+        Assert.Equal(rule, picked.MayhemFriendlyFire);
+        await alice.InvokeAsync<RoomSnapshot>("RoomStartCharacterSelect");
+        await alice.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
+        await bob.InvokeAsync<RoomSnapshot>("RoomSelectCharacter", "Manki");
+        var push = WaitForPushAsync<MatchStartedConfig>(bob, "MatchStarted", _ => true);
+        var started = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+        Assert.Equal(RoomFormats.MankiMayhem, started.Format);
+        Assert.Equal(rule, started.FriendlyFire);
+        Assert.Equal(rule, (await push).FriendlyFire);
+        Assert.Equal(rule, Assert.Single(host.Starts).GetProperty("friendlyFire").GetString());
+        Assert.All(started.Players, p => Assert.Equal("Manki", p.Character));
+        await Assert.ThrowsAsync<HubException>(() => alice.InvokeAsync<RoomSnapshot>(
+            "RoomChoosePick", RoomFormats.MankiMayhem, "manki_mayhem", "off"));
+    }
+
     [Fact]
     public async Task FriendlyFireDefaultsOffIsLeaderControlledAndReachesTheMatchAndGameHost()
     {
@@ -950,8 +985,8 @@ public sealed class RoomIntegrationTests : IDisposable
         Assert.True((await push).FriendlyFire);
         await PrepareExistingRoomAsync(alice, bob, RoomFormats.SlopballCoop);
         var starting = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
-        Assert.True(starting.FriendlyFire);
-        Assert.True(Assert.Single(host.Starts).GetProperty("friendlyFire").GetBoolean());
+        Assert.Equal("on", starting.FriendlyFire);
+        Assert.Equal("on", Assert.Single(host.Starts).GetProperty("friendlyFire").GetString());
         var inMatch = await Assert.ThrowsAsync<HubException>(() => alice.InvokeAsync("RoomSetFriendlyFire", false));
         Assert.Contains("invalid_phase", inMatch.Message);
         Assert.True((await bob.InvokeAsync<RoomSnapshot>("GetMyRoom")).FriendlyFire);
@@ -961,8 +996,8 @@ public sealed class RoomIntegrationTests : IDisposable
         Assert.False((await alice.InvokeAsync<RoomSnapshot>("RoomSetFriendlyFire", false)).FriendlyFire);
         await PrepareExistingRoomAsync(alice, bob, RoomFormats.SlopballCoop);
         var rematch = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
-        Assert.False(rematch.FriendlyFire);
-        Assert.False(host.Starts.Last().GetProperty("friendlyFire").GetBoolean());
+        Assert.Equal("off", rematch.FriendlyFire);
+        Assert.Equal("off", host.Starts.Last().GetProperty("friendlyFire").GetString());
     }
 
     [Fact]
@@ -979,7 +1014,7 @@ public sealed class RoomIntegrationTests : IDisposable
         await PrepareExistingRoomAsync(alice, bob);
         var match = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
         Assert.Equal(RoomFormats.Stock, match.Format);
-        Assert.False(match.FriendlyFire);
+        Assert.Equal("off", match.FriendlyFire);
         Assert.False(Assert.Single(host.Starts).TryGetProperty("friendlyFire", out _));
     }
 
