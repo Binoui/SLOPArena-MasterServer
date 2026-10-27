@@ -6,6 +6,7 @@ namespace MasterServer.Rooms;
 /// </summary>
 public static class RoomFormats
 {
+    public const string MankiMayhem = "manki-mayhem";
     public const string Stock = "stock";
     public const string SlopballCoop = "slopball-coop";
     public const string SlopballVersus = "slopball-versus";
@@ -14,12 +15,19 @@ public static class RoomFormats
     public const string CourseCoop = "course-coop";
     public static bool IsCourse(string format) => format is CourseRace or CourseCoop;
 
-    public static bool IsArcade(string format) => format is SlopballCoop or SlopballVersus or CourseRace or CourseCoop;
+    public static bool IsArcade(string format) => format is MankiMayhem or SlopballCoop or SlopballVersus or CourseRace or CourseCoop;
+
+    public static bool AdmitsFriendlyFire(string format, string mode) => format switch
+    {
+        MankiMayhem => mode is "off" or "shoves" or "on",
+        SlopballCoop => mode is "off" or "on",
+        _ => mode == "off",
+    };
 
     /// <summary>Whether a Room of <paramref name="members"/> can play <paramref name="format"/>.</summary>
     public static bool Fits(string format, int members) => format switch
     {
-        Stock or SlopballCoop or CourseRace or CourseCoop => members is >= 2 and <= 4,
+        Stock or MankiMayhem or SlopballCoop or CourseRace or CourseCoop => members is >= 2 and <= 4,
         SlopballVersus => members is 2 or 4,
         _ => false,
     };

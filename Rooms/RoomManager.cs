@@ -275,7 +275,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
     }
 
     /// <summary>The leader's pick in Stage Select: a PvP stage, or an admitted Arcade format and its arena.</summary>
-    public RoomMutationResult ChoosePick(long steamId, string format, string arena)
+    public RoomMutationResult ChoosePick(long steamId, string format, string arena, string mayhemFriendlyFire = "shoves")
     {
         lock (_gate)
         {
@@ -288,6 +288,9 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
                     : "arcade_not_admitted: Choose an admitted Arcade format.");
             if (!RoomFormats.Fits(format, room!.Members.Count))
                 return Reject("room_size: This format doesn't fit the Room's size.");
+            if (format == RoomFormats.MankiMayhem && !RoomFormats.AdmitsFriendlyFire(format, mayhemFriendlyFire))
+                return Reject("invalid_rule: Choose Off, Shoves or On for Mayhem.");
+            if (format == RoomFormats.MankiMayhem) room.MayhemFriendlyFire = mayhemFriendlyFire;
             room.Format = format;
             room.ArenaName = arena;
             for (int i = 0; i < room.Members.Count; i++)
@@ -388,7 +391,8 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
                 new LobbyPlayer(member.SteamId, member.Name, member.CharacterSelection,
                     true, member.SteamId == room.LeaderSteamId, index + 1, member.Camp, member.Colour)).ToArray();
             return new RoomLaunchPreparation(room.Id, matchId, room.ArenaName, players, room.Format,
-                room.Format == RoomFormats.SlopballCoop && room.FriendlyFire,
+                room.Format == RoomFormats.MankiMayhem ? room.MayhemFriendlyFire
+                    : room.Format == RoomFormats.SlopballCoop && room.FriendlyFire ? "on" : "off",
                 room.Format == RoomFormats.SlopballVersus && room.BallOnly);
         }
     }
@@ -607,7 +611,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         return new RoomSnapshot(room.Id, room.Name, room.Phase, room.LeaderSteamId, members,
             members.Length, MaxMembers, room.Phase == "Lobby" && members.Length < MaxMembers,
             room.ArenaName, _characters.ToArray(), _arenas.ToArray(), room.ActiveMatchId,
-            room.Format, _arcade.ToArray(), room.FriendlyFire, room.BallOnly);
+            room.Format, _arcade.ToArray(), room.FriendlyFire, room.BallOnly, room.MayhemFriendlyFire);
     }
 
     private static RoomObservationSnapshot ToOwnerObservationSnapshot(Room room)
@@ -638,6 +642,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
         public string Phase { get; set; } = "Lobby";
         public string? ArenaName { get; set; }
         public string Format { get; set; } = RoomFormats.Stock;
+        public string MayhemFriendlyFire { get; set; } = "shoves";
         public bool FriendlyFire { get; set; }
         public bool BallOnly { get; set; }
         public Guid? ActiveMatchId { get; set; }
