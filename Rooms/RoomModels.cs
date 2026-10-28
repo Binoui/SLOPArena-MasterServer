@@ -23,7 +23,7 @@ public sealed record RoomSnapshot(
     bool FriendlyFire = false, bool BallOnly = false, string MayhemFriendlyFire = "shoves");
 
 /// <summary>An Arcade format and the arena it plays on, admitted for Rooms (ADR-0040).</summary>
-public sealed record RoomArcadeEntry(string Format, string Arena, string? Fighter = null);
+public sealed record RoomArcadeEntry(string Format, string Arena);
 
 internal sealed record RoomObservationSnapshot(
     Guid Id,

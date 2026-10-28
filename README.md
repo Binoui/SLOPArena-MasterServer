@@ -376,8 +376,12 @@ missed heartbeats. This uses the same idempotent terminal transition and
 preserves unrelated Rooms and chats.
 
 `Room:AdmittedCharacters` and `Room:AdmittedArenas` are deployment-pinned selectors.
-`Room:AdmittedArcade` lists Arcade picks as `<format>:<arena>` entries (default
-`slopball-coop:slopball`); a Room may admit none. Releases don't rewrite it yet, so the
+`Room:AdmittedArcade` lists Arcade picks as `<format>:<arena>` entries, including
+`course-race` and `course-coop`; a Room may admit none. Course members choose any
+admitted fighter, including mirrors, and must lock in with distinct colours.
+Legacy `<course format>:<arena>:<fighter>` entries load with one startup warning
+per entry; Master ignores the fighter segment. Other formats reject a third segment.
+Releases don't rewrite the list yet, so the
 default applies unless the environment sets `Room__AdmittedArcade__*`.
 `Room:CatalogHash` defaults to the current cooked roster's 64-character GameHost
 content hash; update it with each accepted content release or override via

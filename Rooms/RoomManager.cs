@@ -6,7 +6,7 @@ using Microsoft.Extensions.Configuration;
 namespace MasterServer.Rooms;
 
 /// <summary>Public, in-memory Rooms; membership is keyed by verified Steam identity.</summary>
-public sealed class RoomManager(TimeProvider clock, IConfiguration configuration)
+public sealed class RoomManager(TimeProvider clock, IConfiguration configuration, ILogger<RoomManager>? logger = null)
 {
     private const int MaxRooms = 5;
     private const int MaxMembers = 4;
@@ -15,7 +15,7 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
     private static readonly IReadOnlyList<string> NoConnections = Array.Empty<string>();
     private readonly HashSet<string> _characters = LoadAdmission(configuration, "Room:AdmittedCharacters");
     private readonly HashSet<string> _arenas = LoadAdmission(configuration, "Room:AdmittedArenas");
-    private readonly HashSet<RoomArcadeEntry> _arcade = LoadArcadeAdmission(configuration, "Room:AdmittedArcade");
+    private readonly HashSet<RoomArcadeEntry> _arcade = LoadArcadeAdmission(configuration, "Room:AdmittedArcade", logger);
     public string? CatalogHash => configuration["Room:CatalogHash"];
     // Serializes match launch and terminal snapshots so stale updates cannot overtake a rematch.
     internal SemaphoreSlim MatchLifecycleGate { get; } = new(1, 1);
@@ -29,17 +29,19 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
     }
 
     /// <summary>Arcade picks as <c>format:arena</c> entries; Rooms may admit none.</summary>
-    private static HashSet<RoomArcadeEntry> LoadArcadeAdmission(IConfiguration configuration, string key)
+    private static HashSet<RoomArcadeEntry> LoadArcadeAdmission(
+        IConfiguration configuration, string key, ILogger<RoomManager>? logger)
     {
         var entries = new HashSet<RoomArcadeEntry>();
         foreach (var value in configuration.GetSection(key).Get<string[]>() ?? Array.Empty<string>())
         {
             var parts = value?.Split(':') ?? Array.Empty<string>();
             if (parts.Length is not (2 or 3) || !RoomFormats.IsArcade(parts[0]) || string.IsNullOrWhiteSpace(parts[1])
-                || (RoomFormats.IsCourse(parts[0]) ? parts.Length != 3 || string.IsNullOrWhiteSpace(parts[2])
-                    || !(configuration.GetSection("Room:AdmittedCharacters").Get<string[]>() ?? []).Contains(parts[2]) : parts.Length != 2))
+                || (parts.Length == 3 && !RoomFormats.IsCourse(parts[0])))
                 throw new InvalidOperationException($"{key} entries must be <arcade format>:<arena>, not '{value}'.");
-            var entry = new RoomArcadeEntry(parts[0], parts[1], parts.Length == 3 ? parts[2] : null);
+            if (parts.Length == 3)
+                logger?.LogWarning("Legacy course admission '{Entry}' includes an ignored fighter segment. Use <format>:<arena>.", value);
+            var entry = new RoomArcadeEntry(parts[0], parts[1]);
             if (entries.Any(e => e.Format == entry.Format && e.Arena == entry.Arena))
                 throw new InvalidOperationException("Duplicate Arcade admission.");
             entries.Add(entry);
@@ -298,8 +300,6 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
                 room.Members[i].Camp = format == RoomFormats.SlopballVersus ? (i % 2 == 0 ? "teal" : "clay") : "";
                 room.Members[i].LockedIn = false;
                 room.Members[i].Colour = (byte)i;
-                if (RoomFormats.IsCourse(format))
-                    room.Members[i].CharacterSelection = _arcade.Single(e => e.Format == format && e.Arena == arena).Fighter;
             }
             return Changed(room, steamId);
         }
@@ -331,8 +331,6 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
             if (error is not null) return error;
             if (character is null || !_characters.Contains(character))
                 return Reject("character_not_admitted: Choose an admitted Character.");
-            if (RoomFormats.IsCourse(room!.Format) && character != _arcade.Single(e => e.Format == room.Format && e.Arena == room.ArenaName).Fighter)
-                return Reject("course_fighter: This course sets the fighter; choose a colour and lock in.");
             var member = FindMember(room!, steamId);
             member.CharacterSelection = character;
             member.LockedIn = true;
@@ -381,9 +379,8 @@ public sealed class RoomManager(TimeProvider clock, IConfiguration configuration
                 && (room.Members.Any(m => m.Camp is not ("teal" or "clay"))
                     || room.Members.Count(m => m.Camp == "teal") != room.Members.Count / 2))
             { error = "unbalanced_camps: Versus Slopball needs equal Teal and Clay camps."; return null; }
-            if (RoomFormats.IsCourse(room.Format) && (room.Members.Select(m => m.Colour).Distinct().Count() != room.Members.Count
-                || room.Members.Any(m => m.CharacterSelection != _arcade.Single(e => e.Format == room.Format && e.Arena == room.ArenaName).Fighter)))
-            { error = "course_roster: Lock in the course fighter and distinct colours."; return null; }
+            if (RoomFormats.IsCourse(room.Format) && room.Members.Select(m => m.Colour).Distinct().Count() != room.Members.Count)
+            { error = "course_roster: Lock in distinct colours."; return null; }
             room.ActiveMatchId = matchId;
             room.Phase = "Match Starting";
             error = null;
