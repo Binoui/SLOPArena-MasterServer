@@ -102,6 +102,7 @@ public class LobbyHubTests
 
             var ctx = new Mock<HubCallerContext>();
             ctx.SetupGet(c => c.ConnectionId).Returns(connectionId);
+            ctx.SetupGet(c => c.Items).Returns(new Dictionary<object, object?>());
             ctx.SetupGet(c => c.User!)
                 .Returns(new ClaimsPrincipal(new ClaimsIdentity(new[]
                 {

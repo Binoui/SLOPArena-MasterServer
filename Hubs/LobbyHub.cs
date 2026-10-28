@@ -4,6 +4,7 @@ using System.Security.Claims;
 using MasterServer.Chat;
 using MasterServer.Configuration;
 using MasterServer.Data;
+using MasterServer.Data.Models;
 using MasterServer.Lobbies;
 using MasterServer.Rooms;
 using Microsoft.AspNetCore.Authorization;
@@ -33,6 +34,7 @@ public sealed class LobbyHub : Hub
     // One Master process serializes host selection with launch; the persisted open rows
     // arbitrate capacity after each release. A replicated Master needs DB reservation.
     private static readonly SemaphoreSlim RoomLaunchGate = new(1, 1);
+    private const string PlayerSessionKey = "PlayerSessionId";
 
     public LobbyHub(LobbyManager lobbies, AppDbContext db, IMatchLauncher launcher,
         ILogger<LobbyHub> logger, ChatService chat, MasterDeploymentOptions deployment, RoomManager rooms,
@@ -85,6 +87,10 @@ public sealed class LobbyHub : Hub
                     await _directory.NotifyChangedAsync(Context.ConnectionAborted);
             }
             await Clients.Caller.SendAsync("ChatServerChanged", roomChat, Context.ConnectionAborted);
+            var session = new PlayerSession { SteamId = playerId, ConnectedAt = DateTime.UtcNow };
+            _db.PlayerSessions.Add(session);
+            await _db.SaveChangesAsync(Context.ConnectionAborted);
+            Context.Items[PlayerSessionKey] = session.Id;
         }
         catch
         {
@@ -691,6 +697,12 @@ public sealed class LobbyHub : Hub
         await AnnounceDeparture(departure.ServerId, departure.Player, departure.Snapshot);
         if (presence is not null)
             await Clients.All.SendAsync("ChatPresenceChanged", presence);
+        if (Context.Items.TryGetValue(PlayerSessionKey, out var sessionId) &&
+            await _db.PlayerSessions.FindAsync(sessionId) is { } session)
+        {
+            session.DisconnectedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync();
+        }
         await base.OnDisconnectedAsync(exception);
     }
 

@@ -1102,6 +1102,54 @@ public sealed class RoomIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task PlayerTimeIsRecordedForSessionsAndMatchResults()
+    {
+        var host = new GameHostHandler();
+        var (factory, client) = CreateFactory(gameHost: host);
+        var registered = await RegisterCompatibleHostAsync(client, capacity: 2);
+        var alice = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Alice"));
+        var bob = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Bob"));
+        await PrepareMatchAsync(alice, bob, "Timed Room");
+        var match = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+        long aliceId = match.Players[0].SteamId, bobId = match.Players[1].SteamId;
+
+        using (var request = new HttpRequestMessage(HttpMethod.Post, "/match/result")
+               {
+                   Content = JsonContent.Create(new MatchResultRequest(match.MatchId, aliceId,
+                       [new MatchPlayerTime(aliceId, 184), new MatchPlayerTime(bobId, 97), new MatchPlayerTime(999, 5)]))
+               })
+        {
+            request.Headers.Authorization = new("Bearer", registered.ApiToken);
+            using var response = await client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+        }
+        await bob.StopAsync();
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var row = await db.Matches.FindAsync(match.MatchId);
+        var times = new Dictionary<long, int?>
+        {
+            [row!.Player1SteamId] = row.Player1ConnectedSeconds,
+            [row.Player2SteamId] = row.Player2ConnectedSeconds,
+        };
+        Assert.Equal(184, times[aliceId]);
+        Assert.Equal(97, times[bobId]);
+        var sessions = await db.PlayerSessions.ToListAsync();
+        Assert.Null(Assert.Single(sessions, session => session.SteamId == aliceId).DisconnectedAt);
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (true)
+        {
+            using var poll = factory.Services.CreateScope();
+            if (await poll.ServiceProvider.GetRequiredService<AppDbContext>().PlayerSessions
+                    .AnyAsync(session => session.SteamId == bobId && session.DisconnectedAt != null))
+                break;
+            Assert.True(DateTime.UtcNow < deadline, "Bob's session closed on disconnect");
+            await Task.Delay(20);
+        }
+    }
+
+    [Fact]
     public async Task ResultAndCancellationAreMatchScopedIdempotentAndPreserveRoomChatAndRematch()
     {
         var host = new GameHostHandler();

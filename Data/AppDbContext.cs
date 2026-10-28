@@ -11,6 +11,7 @@ public class AppDbContext : DbContext
     public DbSet<Match> Matches { get; set; } = null!;
     public DbSet<GameServer> GameServers { get; set; } = null!;
     public DbSet<UsedSteamAuthTicket> UsedSteamAuthTickets { get; set; } = null!;
+    public DbSet<PlayerSession> PlayerSessions { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -75,6 +76,12 @@ public class AppDbContext : DbContext
             entity.HasKey(e => e.Hash);
             entity.Property(e => e.Hash).HasMaxLength(64).IsRequired();
             entity.Property(e => e.ConsumedAt).IsRequired();
+        });
+
+        modelBuilder.Entity<PlayerSession>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.SteamId);
         });
     }
 }
