@@ -52,7 +52,9 @@ public sealed record SteamMatchDescriptor(
     // 16: match content pins the exact baked arena digest alongside the character catalog.
     // 20: Mayhem online and the three-value friendly-fire start contract.
     // 22: JUMP! rings and BREAK OUT! runtime solids, snapshot 12 and World Frame 7.
-    public const int Protocol = 22;
+    // 23-28: progressive locomotion, run-attack carry, homing dash arrival, Bashie's shell stance
+    //        and Beeline aim/arrival changes; Master payloads unchanged.
+    public const int Protocol = 28;
 }
 
 
