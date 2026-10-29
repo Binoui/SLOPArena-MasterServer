@@ -51,6 +51,15 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSignalR(options => options.AddFilter<ChatControlRateFilter>());
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ChatService>();
+const string PublicPresenceCors = "PublicPresence";
+builder.Services.AddCors(options => options.AddPolicy(PublicPresenceCors, policy => policy
+    .WithOrigins(
+        "https://playsloparena.com",
+        "https://www.playsloparena.com",
+        "https://sloparena.barakaslurp.fr",
+        "https://*.playsloparena.pages.dev")
+    .SetIsOriginAllowedToAllowWildcardSubdomains()
+    .WithMethods(HttpMethods.Get)));
 // Guest issuance is an explicit development mode, never inferred from the VPS profile.
 builder.Services.AddSingleton(sp => SteamAuthOptions.Load(
     sp.GetRequiredService<IConfiguration>(),
@@ -186,6 +195,7 @@ var jwtIssuer = app.Configuration["Jwt:Issuer"] ?? "SlopArena.Master";
 var jwtAudience = app.Configuration["Jwt:Audience"] ?? "SlopArena.Client";
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
 app.UseForwardedHeaders();
+app.UseCors();
 // Reject oversized credential bodies before minimal-API JSON binding (including TestServer).
 app.Use(async (context, next) =>
 {
@@ -200,6 +210,9 @@ app.Use(async (context, next) =>
 
 
 app.MapGet("/health", () => new { status = "ok", version = "0.1.0" });
+app.MapGet("/presence", (ChatService chat) => new { onlinePlayerCount = chat.GetOnlinePlayerCount() })
+    .AllowAnonymous()
+    .RequireCors(PublicPresenceCors);
 app.MapGet("/owner/observation", async (
     HttpContext httpContext,
     IConfiguration configuration,
