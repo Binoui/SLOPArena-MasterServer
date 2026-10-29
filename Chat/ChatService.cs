@@ -198,6 +198,12 @@ public sealed class ChatService
             return _identities.Values.Select(identity => identity.Profile).ToArray();
     }
 
+    internal int GetOnlinePlayerCount()
+    {
+        lock (_lock)
+            return _identities.Count;
+    }
+
     internal (ChatPlayer[] Players, ChatMessage[] GlobalMessages) GetOwnerObservationSnapshot()
     {
         lock (_lock)

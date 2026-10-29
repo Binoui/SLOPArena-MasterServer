@@ -416,6 +416,28 @@ Hub errors include stable prefixes and guidance: `invalid_room_name`, `room_limi
 `not_leader`, `invalid_phase`, `room_not_ready`, `character_not_admitted`, and
 `arena_not_admitted`.
 
+## Public presence API
+
+Anonymous `GET /presence` returns only `{ "onlinePlayerCount": 0 }` (with the
+current integer count). Online means a distinct authenticated player with at
+least one active `/lobby` SignalR connection to this Master process, including
+players in menus, Rooms, or matches. Multiple connections count once; an issued
+JWT, stored account, remembered admission, or disconnected Room member does not
+count. Disconnects take effect when SignalR detects them; a Master restart
+clears presence until clients reconnect. This is connected-client presence,
+not a count of fighters actively simulating at GameHost.
+
+The endpoint reads the existing in-memory identity dictionary count under its
+lock in constant time, without querying the database or enumerating profiles.
+No names, identifiers, sessions, or match details are returned.
+
+CORS applies only to this endpoint and allows GET from
+`https://playsloparena.com`, `https://www.playsloparena.com`,
+`https://sloparena.barakaslurp.fr`, and HTTPS preview subdomains of
+`playsloparena.pages.dev`. Credentials are not enabled. The game's VPS Caddy
+configuration already forwards `/presence` to Master while excluding `/owner`;
+no ingress change is needed.
+
 ## Owner observation API
 
 `GET /owner/observation` is a read-only inspection endpoint for a private owner
