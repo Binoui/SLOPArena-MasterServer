@@ -16,6 +16,11 @@ public class Match
     public string? CancelReason { get; set; }
     public DateTime StartedAt { get; set; } = DateTime.UtcNow;
     public DateTime? EndedAt { get; set; }
+    // Seconds each rostered player's Steam peer stayed connected, from the GameHost result.
+    public int? Player1ConnectedSeconds { get; set; }
+    public int? Player2ConnectedSeconds { get; set; }
+    public int? Player3ConnectedSeconds { get; set; }
+    public int? Player4ConnectedSeconds { get; set; }
 
     // Navigation properties
     public User? Player1 { get; set; }

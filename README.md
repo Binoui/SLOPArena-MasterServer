@@ -505,6 +505,39 @@ authentication, not every connection or game launch. The console joins current
 Master presence from its independent observation feed and refreshes registered
 history every 30 seconds only while the Players history view is visible.
 
+### Player time
+
+`PlayerSessions` holds one row per authenticated LobbyHub connection: `SteamId`,
+`ConnectedAt` and `DisconnectedAt`. It covers menus, Rooms and matches. A null
+`DisconnectedAt` on a closed connection means Master stopped before the
+disconnect was saved. The row is written after connection setup succeeds.
+
+`Matches.Player1ConnectedSeconds` through `Player4ConnectedSeconds` come from the
+GameHost result. They count the countdown and play during which that player's
+Steam peer was connected, so a player who left early has fewer seconds than the
+match lasted. Rows from older GameHosts, cancellations and aborted matches keep
+them null.
+
+Per-player totals, read in `psql` on the database:
+
+```sql
+SELECT u."Username", s."SteamId", count(*) AS sessions,
+       sum(coalesce(s."DisconnectedAt", s."ConnectedAt") - s."ConnectedAt") AS online
+FROM "PlayerSessions" s JOIN "Users" u ON u."SteamId" = s."SteamId"
+GROUP BY u."Username", s."SteamId" ORDER BY online DESC;
+
+SELECT u."Username", p.id AS "SteamId", count(*) AS matches,
+       sum(p.secs) * interval '1 second' AS in_match
+FROM "Matches" m
+CROSS JOIN LATERAL (VALUES (m."Player1SteamId", m."Player1ConnectedSeconds"),
+    (m."Player2SteamId", m."Player2ConnectedSeconds"),
+    (m."Player3SteamId", m."Player3ConnectedSeconds"),
+    (m."Player4SteamId", m."Player4ConnectedSeconds")) AS p(id, secs)
+JOIN "Users" u ON u."SteamId" = p.id
+WHERE p.secs IS NOT NULL
+GROUP BY u."Username", p.id ORDER BY in_match DESC;
+```
+
 ## Chat client contract
 
 This is the Master-side contract for [SlopArena chat](https://github.com/Binoui/SlopArena/issues/206).

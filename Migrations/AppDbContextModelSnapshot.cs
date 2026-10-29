@@ -106,8 +106,20 @@ namespace MasterServer.Migrations
                     b.Property<DateTime?>("EndedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int?>("Player1ConnectedSeconds")
+                        .HasColumnType("integer");
+
                     b.Property<long>("Player1SteamId")
                         .HasColumnType("bigint");
+
+                    b.Property<int?>("Player2ConnectedSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("Player3ConnectedSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("Player4ConnectedSeconds")
+                        .HasColumnType("integer");
 
                     b.Property<long>("Player2SteamId")
                         .HasColumnType("bigint");
@@ -146,6 +158,30 @@ namespace MasterServer.Migrations
                     b.HasIndex("WinnerSteamId");
 
                     b.ToTable("Matches");
+                });
+
+            modelBuilder.Entity("MasterServer.Data.Models.PlayerSession", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("ConnectedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("DisconnectedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("SteamId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SteamId");
+
+                    b.ToTable("PlayerSessions");
                 });
 
             modelBuilder.Entity("MasterServer.Data.Models.UsedSteamAuthTicket", b =>

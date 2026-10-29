@@ -885,6 +885,14 @@ app.MapPost("/match/result", async (
 
         match.WinnerSteamId = request.WinnerSteamId > 0 ? request.WinnerSteamId : null;
         match.EndedAt = DateTime.UtcNow;
+        foreach (var player in request.Players ?? [])
+        {
+            int? seconds = Math.Max(0, player.ConnectedSeconds);
+            if (player.SteamId == match.Player1SteamId) match.Player1ConnectedSeconds = seconds;
+            else if (player.SteamId == match.Player2SteamId) match.Player2ConnectedSeconds = seconds;
+            else if (player.SteamId == match.Player3SteamId) match.Player3ConnectedSeconds = seconds;
+            else if (player.SteamId == match.Player4SteamId) match.Player4ConnectedSeconds = seconds;
+        }
         server.CurrentMatches = Math.Max(0, server.CurrentMatches - 1);
         await db.SaveChangesAsync(httpContext.RequestAborted);
         await completion.PublishRoomTerminalUpdateAsync(match.RoomId, match.Id);
