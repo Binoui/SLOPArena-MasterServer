@@ -54,7 +54,9 @@ public sealed record SteamMatchDescriptor(
     // 22: JUMP! rings and BREAK OUT! runtime solids, snapshot 12 and World Frame 7.
     // 23-28: progressive locomotion, run-attack carry, homing dash arrival, Bashie's shell stance
     //        and Beeline aim/arrival changes; Master payloads unchanged.
-    public const int Protocol = 28;
+    // 29-31: ground start, Cyclone Kick, capsule hurtboxes, grab rework, Nyx, Wibou, FightGuy
+    //        and Manki kit changes (playtest.38); Master payloads unchanged.
+    public const int Protocol = 31;
 }
 
 
