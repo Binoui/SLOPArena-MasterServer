@@ -56,7 +56,8 @@ public sealed record SteamMatchDescriptor(
     //        and Beeline aim/arrival changes; Master payloads unchanged.
     // 29-31: ground start, Cyclone Kick, capsule hurtboxes, grab rework, Nyx, Wibou, FightGuy
     //        and Manki kit changes (playtest.38); Master payloads unchanged.
-    public const int Protocol = 31;
+    // 32: one command grab (ADR-0057) for FightGuy and Nyx (playtest.40); Master payloads unchanged.
+    public const int Protocol = 32;
 }
 
 
