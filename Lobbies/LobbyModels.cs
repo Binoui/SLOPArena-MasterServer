@@ -57,7 +57,9 @@ public sealed record SteamMatchDescriptor(
     // 29-31: ground start, Cyclone Kick, capsule hurtboxes, grab rework, Nyx, Wibou, FightGuy
     //        and Manki kit changes (playtest.38); Master payloads unchanged.
     // 32: one command grab (ADR-0057) for FightGuy and Nyx (playtest.40); Master payloads unchanged.
-    public const int Protocol = 32;
+    // 33: Manki mines/charged rocket/Kamikaze startup (ADR-0049), walk + takeoff cap (ADR-0058), Nyxxie
+    //     overhead (playtest.41); Master payloads unchanged.
+    public const int Protocol = 33;
 }
 
 
