@@ -59,7 +59,9 @@ public sealed record SteamMatchDescriptor(
     // 32: one command grab (ADR-0057) for FightGuy and Nyx (playtest.40); Master payloads unchanged.
     // 33: Manki mines/charged rocket/Kamikaze startup (ADR-0049), walk + takeoff cap (ADR-0058), Nyxxie
     //     overhead (playtest.41); Master payloads unchanged.
-    public const int Protocol = 33;
+    // 34: normals renumbered 1/2/3, Sir Bonk Leap of Faith/Joust/lid, Manki Head Slam + Double Fist Slam,
+    //     wall jump, Wibou counter, Nyx round 2 (playtest.42); Master payloads unchanged.
+    public const int Protocol = 34;
 }
 
 
