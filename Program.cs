@@ -146,6 +146,8 @@ builder.Services.AddHostedService<RoomCleanupService>();
 builder.Services.AddHttpClient<IMatchLauncher, HttpMatchLauncher>();
 builder.Services.AddHttpClient("GameHostHealth")
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient<OwnerReplays>(client => client.Timeout = Timeout.InfiniteTimeSpan)
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddHttpClient<OwnerMatchDiagnosticsReader>()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddAuthorization();
@@ -250,6 +252,21 @@ app.MapGet("/owner/matches/{matchId:guid}/diagnostics", async (
     return result.Diagnostics is { } data
         ? Results.Ok(data)
         : Results.Json(new { message = result.Message }, statusCode: result.StatusCode);
+});
+
+app.MapGet("/owner/replays", async (
+    HttpContext context, IConfiguration configuration, OwnerReplays reader) =>
+{
+    if (OwnerConsoleAccess.Reject(context, configuration) is { } rejected) return rejected;
+    return await reader.ListAsync(context.RequestAborted);
+});
+
+app.MapGet("/owner/matches/{matchId:guid}/replay", async (
+    Guid matchId, HttpContext context, IConfiguration configuration, OwnerReplays reader) =>
+{
+    if (OwnerConsoleAccess.Reject(context, configuration) is { } rejected)
+    { await rejected.ExecuteAsync(context); return; }
+    await reader.DownloadAsync(matchId, context);
 });
 
 app.MapGet("/ready", async (AppDbContext db, CancellationToken requestAborted) =>

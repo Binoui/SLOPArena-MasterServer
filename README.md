@@ -21,6 +21,9 @@ host/address lookup and waiting-roster control remain development-only.
 | `GET /servers` | Physical GameHost lookup in development only; VPS returns 404 |
 | `POST /match/result`, `POST /match/cancel` | Authenticated terminal Match report, matching Room return; cancellation has no winner |
 | `GET /owner/observation` | Dedicated owner-key read-only snapshot for the private console; disabled until configured |
+| `GET /owner/matches/{matchId}/diagnostics` | Bounded private GameHost match diagnostics |
+| `GET /owner/replays` | Validated private GameHost replay list |
+| `GET /owner/matches/{matchId}/replay` | Stream a retained recording as a download |
 | `/lobby` (SignalR) | Authenticated public Rooms, Room chat and scoped Match route; development-only physical lobbies |
 
 ## Tech Stack
@@ -773,3 +776,33 @@ not part of this projection. No database migration is required.
 
 The accompanying hitstun snapshot repair uses simulation/admission protocol 7;
 release Master, GameHost and Steam clients together.
+
+
+## Owner replays
+
+`GET /owner/replays` and `GET /owner/matches/{matchId}/replay` use the same
+`X-Console-Key`, disabled-without-key behavior, private provisioned GameHost
+control URL/key, no-store caching and redirect rejection as owner diagnostics.
+No database migration or protocol change is required (Master protocol remains 35).
+
+The list returns `{"replays":[{"matchId":"<guid D>","bytes":123,"complete":true,
+"modifiedAtUtc":"<ISO-8601 UTC>"}]}`. Master validates at most 2000 entries,
+canonical GUIDs, sizes from 0 to 64,000,000 bytes, completeness and UTC timestamps,
+and buffers at most 512 KiB. A disabled recording service returns an empty list.
+Master does not add database metadata to the list.
+
+Downloads require a known persisted match assigned to the provisioned GameHost.
+They stream as `application/octet-stream` with
+`Content-Disposition: attachment; filename="<matchId>.slopreplay"`.
+The upstream header deadline is four seconds; the body deadline is 120 seconds.
+Master rejects a declared size above 64,000,000 bytes before delivery and aborts
+an ongoing download if its stream exceeds that limit. Downloads never buffer the
+whole recording. Complete recordings and retained crashed partials use the same
+filename; a recording still being written returns `409`.
+
+`404` means an unknown Master match or disabled owner endpoint, `410` means no
+recording retained by GameHost, `409` means still recording, `503` means an
+unavailable/unprovisioned GameHost or timeout, and `502` means invalid/oversized
+upstream data detected before delivery. Once streaming starts, upstream failure,
+timeout or oversize terminates the response. Public ingress must exclude these
+owner routes; access them through the private owner console.
