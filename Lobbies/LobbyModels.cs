@@ -61,7 +61,8 @@ public sealed record SteamMatchDescriptor(
     //     overhead (playtest.41); Master payloads unchanged.
     // 34: normals renumbered 1/2/3, Sir Bonk Leap of Faith/Joust/lid, Manki Head Slam + Double Fist Slam,
     //     wall jump, Wibou counter, Nyx round 2 (playtest.42); Master payloads unchanged.
-    public const int Protocol = 34;
+    // 35: Shared Replay file and GameHost recording (ADR-0060, playtest.44); Master payloads unchanged.
+    public const int Protocol = 35;
 }
 
 
