@@ -22,7 +22,7 @@ public sealed record LobbyPlayer(
     [property: JsonPropertyName("characterSelection")] string? Character,
     bool LockedIn,
     bool IsHost,
-    int EntityId = 0, string Camp = "", byte Colour = 0);
+    int EntityId = 0, string Camp = "", byte Colour = 0, string? DisplayName = null);
 
 /// <summary>
 /// Full lobby membership snapshot pushed on any change via <c>LobbyUpdated</c>.

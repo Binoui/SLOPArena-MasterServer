@@ -430,6 +430,29 @@ public class LobbyHubTests
     }
 
     [Fact]
+    public async Task StartMatch_UsesCurrentChatProfileNameAndNullForUnknownPlayers()
+    {
+        using var db = CreateInMemoryDb();
+        var harness = new HubHarness(db);
+        var alice = harness.CreateHub("c1", 101, "Alice");
+        var bob = harness.CreateHub("c2", 202, "Bob");
+        harness.Clients.SetupGet(clients => clients.All).Returns(harness.AllProxy.Object);
+        await alice.OnConnectedAsync();
+        (await db.Users.FindAsync(101L))!.Username = "Lobby Alice";
+        await db.SaveChangesAsync();
+        await alice.JoinLobby(ServerId, 0);
+        await bob.JoinLobby(ServerId, 0);
+        await alice.SelectCharacter("Manki");
+        await bob.SelectCharacter("FightGuy");
+
+        await alice.StartMatch("training");
+
+        harness.Launcher.Verify(launcher => launcher.LaunchAsync(It.Is<MatchStartedConfig>(config =>
+            config.Players[0].SteamId == 101 && config.Players[0].DisplayName == "Alice" &&
+            config.Players[1].SteamId == 202 && config.Players[1].DisplayName == null)), Times.Once);
+    }
+
+    [Fact]
     public async Task StartMatch_AllLockedIn_BroadcastCarriesMatchPortAndArena()
     {
         // Issue #35: the MatchStarted broadcast must carry the game server's

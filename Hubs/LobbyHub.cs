@@ -340,6 +340,15 @@ public sealed class LobbyHub : Hub
         }
     }
 
+    private IReadOnlyList<LobbyPlayer> MatchPlayersWithDisplayNames(IReadOnlyList<LobbyPlayer> players)
+    {
+        var names = _chat.GetOnlinePlayers().ToDictionary(player => player.PlayerId, player => player.DisplayName);
+        return players.Select(player => player with
+        {
+            DisplayName = names.GetValueOrDefault(player.SteamId.ToString(CultureInfo.InvariantCulture))
+        }).ToArray();
+    }
+
     private async Task<MatchStartedConfig> StartRoomMatchCoreAsync()
     {
         if (!TryGetSteamId(out var playerId))
@@ -361,7 +370,7 @@ public sealed class LobbyHub : Hub
                 var server = await ChooseRoomHostAsync();
                 if (server is null)
                     throw new HubException("gamehost_unavailable: No fresh compatible GameHost has a free Match slot. Retry later.");
-                var config = new MatchStartedConfig(server.Id, preparation.Players,
+                var config = new MatchStartedConfig(server.Id, MatchPlayersWithDisplayNames(preparation.Players),
                     ArenaName: preparation.ArenaName, RoomId: roomId, MatchId: matchId,
                     CatalogHash: _rooms.CatalogHash,
                     ServerAddress: _deployment.IsVps ? null : server.IpAddress,
@@ -634,7 +643,7 @@ public sealed class LobbyHub : Hub
             if (!result.Success)
                 throw new HubException(result.Error ?? "Start match rejected.");
 
-            config = result.Config!;
+            config = result.Config! with { Players = MatchPlayersWithDisplayNames(result.Config!.Players) };
             var launch = await _launcher.LaunchAsync(config);
             if (launch.MatchId == Guid.Empty ||
                 launch.Descriptor is { } descriptor && descriptor.MatchId != launch.MatchId)

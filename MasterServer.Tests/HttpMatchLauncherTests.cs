@@ -285,6 +285,53 @@ public class HttpMatchLauncherTests
         Assert.Null(match.EndedAt);
     }
 
+    [Theory]
+    [InlineData("Alice", "Alice")]
+    [InlineData(null, null)]
+    [InlineData("  Alice  ", "Alice")]
+    [InlineData("Alice\u0001", null)]
+    [InlineData("Alice\u202E", null)]
+    [InlineData("   ", null)]
+    public async Task LaunchAsync_PostsValidatedOptionalDisplayName(string? name, string? expected)
+    {
+        using var db = SeedServer("127.0.0.1", 9876);
+        var handler = new StubHandler();
+        var launcher = CreateLauncher(db, new HttpClient(handler), MasterDeploymentOptions.Development);
+        var players = TwoPlayerRoster();
+        players[0] = players[0] with { DisplayName = name };
+
+        await launcher.LaunchAsync(new MatchStartedConfig(ServerId, players, ArenaName: "slop_court"));
+
+        using var body = JsonDocument.Parse(handler.RequestBody);
+        var posted = body.RootElement.GetProperty("players");
+        Assert.Equal(expected, posted[0].GetProperty("displayName").GetString());
+        Assert.False(posted[0].TryGetProperty("DisplayName", out _));
+        Assert.Equal(JsonValueKind.Null, posted[1].GetProperty("displayName").ValueKind);
+    }
+
+    [Fact]
+    public Task LaunchAsync_RejectsMalformedUtf16DisplayName()
+        => LaunchAsync_PostsValidatedOptionalDisplayName(new string('\uD800', 1), null);
+
+    [Theory]
+    [InlineData(24)]
+    [InlineData(25)]
+    public async Task LaunchAsync_DisplayNameLimitCountsUnicodeScalars(int scalarCount)
+    {
+        using var db = SeedServer("127.0.0.1", 9876);
+        var handler = new StubHandler();
+        var launcher = CreateLauncher(db, new HttpClient(handler), MasterDeploymentOptions.Development);
+        var name = string.Concat(Enumerable.Repeat("🐸", scalarCount));
+        var players = TwoPlayerRoster();
+        players[0] = players[0] with { DisplayName = name };
+
+        await launcher.LaunchAsync(new MatchStartedConfig(ServerId, players, ArenaName: "slop_court"));
+
+        using var body = JsonDocument.Parse(handler.RequestBody);
+        Assert.Equal(scalarCount == 24 ? name : null,
+            body.RootElement.GetProperty("players")[0].GetProperty("displayName").GetString());
+    }
+
     [Fact]
     public async Task LaunchAsync_VpsUsesPrivateControlUrlAndSeparateBearerKey()
     {
