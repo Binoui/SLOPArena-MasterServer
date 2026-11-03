@@ -1,4 +1,6 @@
 using MasterServer.Rooms;
+using MasterServer.Chat;
+using Microsoft.AspNetCore.SignalR;
 // MasterServer/Lobbies/HttpMatchLauncher.cs
 using System.Net.Http.Json;
 using System.Net.Http.Headers;
@@ -144,6 +146,7 @@ public sealed class HttpMatchLauncher : IMatchLauncher
             ["players"] = config.Players.Select(p => new
                 {
                     steamId = p.SteamId,
+                    displayName = ValidDisplayName(p.DisplayName),
                     // Wire key stays `characterClass` — the game server's
                     // MatchStartRequestCodec reads it verbatim (issue #7).
                     characterClass = p.Character,
@@ -267,6 +270,20 @@ public sealed class HttpMatchLauncher : IMatchLauncher
                 new AuthenticationHeaderValue("Bearer", _deployment.MatchControlKey!);
         using var response = await _http.SendAsync(request);
         response.EnsureSuccessStatusCode();
+    }
+
+    private static string? ValidDisplayName(string? name)
+    {
+        if (name is null)
+            return null;
+        try
+        {
+            return ChatText.DisplayName(name);
+        }
+        catch (HubException)
+        {
+            return null;
+        }
     }
 
     private static void ValidateMatchContent(MatchStartResponse result, string requestedArena)

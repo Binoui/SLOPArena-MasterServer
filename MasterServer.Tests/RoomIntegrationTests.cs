@@ -932,6 +932,33 @@ public sealed class RoomIntegrationTests : IDisposable
         Assert.Equal(registered.ServerId, third.ServerId);
     }
 
+    [Fact]
+    public async Task RoomStartMatchPostsCurrentDisplayNamesToGameHost()
+    {
+        var host = new GameHostHandler();
+        var (factory, client) = CreateFactory(gameHost: host);
+        await RegisterCompatibleHostAsync(client);
+        var aliceToken = await RegisterPlayerAsync(client, "Alice");
+        var alice = await ConnectAsync(factory, aliceToken);
+        var bob = await ConnectAsync(factory, await RegisterPlayerAsync(client, "Bob"));
+        await PrepareMatchAsync(alice, bob, "Names");
+        using var rename = new HttpRequestMessage(HttpMethod.Put, "/auth/name")
+        {
+            Content = JsonContent.Create(new SetDisplayNameRequest("  Renamed Alice  "))
+        };
+        rename.Headers.Authorization = new("Bearer", aliceToken);
+        using var response = await client.SendAsync(rename);
+        response.EnsureSuccessStatusCode();
+
+        var started = await alice.InvokeAsync<MatchStartedConfig>("RoomStartMatch");
+
+        var players = Assert.Single(host.Starts).GetProperty("players");
+        Assert.Equal("Renamed Alice", players[0].GetProperty("displayName").GetString());
+        Assert.Equal("Bob", players[1].GetProperty("displayName").GetString());
+        Assert.Equal(started.Players[0].SteamId, players[0].GetProperty("steamId").GetInt64());
+        Assert.Equal(started.Players[1].SteamId, players[1].GetProperty("steamId").GetInt64());
+    }
+
     [Theory]
     [InlineData("off")]
     [InlineData("shoves")]
