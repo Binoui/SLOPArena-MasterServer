@@ -64,7 +64,7 @@ public sealed record SteamMatchDescriptor(
     // 35: Shared Replay file and GameHost recording (ADR-0060, playtest.44); Master payloads unchanged.
     // 36: Replay player display names (ADR-0060, playtest.47); match-start players carry optional displayName.
     // 37: replay viewer cursor fix and docs (playtest.48); Master payloads unchanged.
-    public const int Protocol = 37;
+    public const int Protocol = 38;
 }
 
 

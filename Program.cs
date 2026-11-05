@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Globalization;
 using System.Threading.RateLimiting;
 using MasterServer.Chat;
+using MasterServer.Feedback;
 using MasterServer.Configuration;
 using Microsoft.EntityFrameworkCore;
 using MasterServer.Data;
@@ -156,6 +157,15 @@ builder.Services.AddRateLimiter(options =>
 {
     var rateLimitMax = builder.Configuration.GetValue("RateLimit:MaxRequestsPerWindow", 10);
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, ct) =>
+    {
+        if (context.HttpContext.Request.Path.StartsWithSegments("/feedback"))
+        {
+            context.HttpContext.Response.Headers.CacheControl = "no-store";
+            context.HttpContext.Response.Headers.RetryAfter = "10";
+            await context.HttpContext.Response.WriteAsJsonAsync(new { code = "feedback-rate-limited" }, ct);
+        }
+    };
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
     {
         var path = context.Request.Path;
@@ -173,13 +183,14 @@ builder.Services.AddRateLimiter(options =>
             : path.StartsWithSegments("/auth/steam") ? "steam"
             : path.StartsWithSegments("/auth/name") ? "name"
             : path.StartsWithSegments("/auth/refresh") ? "refresh"
+            : path.StartsWithSegments("/feedback") ? "feedback"
             : "control";
         var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         return RateLimitPartition.GetFixedWindowLimiter(
             $"{budget}:{ip}",
             _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = rateLimitMax,
+                PermitLimit = budget == "feedback" ? 10 : rateLimitMax,
                 Window = TimeSpan.FromSeconds(10),
                 QueueLimit = 0,
                 AutoReplenishment = true
@@ -956,6 +967,8 @@ app.MapPost("/match/cancel", async (MatchCancelRequest request, HttpContext cont
 
 // ── SignalR lobby hub (issue #32) ──
 app.MapHub<LobbyHub>("/lobby", options => options.CloseOnAuthenticationExpiration = true);
+
+app.MapFeedback();
 
 app.Run();
 

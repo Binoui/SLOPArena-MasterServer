@@ -13,8 +13,33 @@ public class AppDbContext : DbContext
     public DbSet<UsedSteamAuthTicket> UsedSteamAuthTickets { get; set; } = null!;
     public DbSet<PlayerSession> PlayerSessions { get; set; } = null!;
 
+    public DbSet<FeedbackReport> FeedbackReports { get; set; } = null!;
+    public DbSet<FeedbackScreenshot> FeedbackScreenshots { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<FeedbackReport>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ReporterUserId, e.SubmissionId }).IsUnique();
+            entity.HasIndex(e => new { e.ReporterUserId, e.ReceivedAtUtc });
+            entity.HasIndex(e => new { e.ReceivedAtUtc, e.Id });
+            entity.Property(e => e.Kind).HasMaxLength(4).IsRequired();
+            entity.Property(e => e.Message).HasMaxLength(2000).IsRequired();
+            entity.Property(e => e.AppVersion).IsRequired();
+            entity.Property(e => e.ContextJson).HasColumnType("jsonb").IsRequired();
+            entity.HasOne<User>().WithMany().HasForeignKey(e => e.ReporterUserId).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<FeedbackScreenshot>(entity =>
+        {
+            entity.HasKey(e => e.ReportId);
+            entity.Property(e => e.Jpeg).HasColumnType("bytea").IsRequired();
+            entity.Property(e => e.Sha256).HasMaxLength(64).IsRequired();
+            entity.HasOne<FeedbackReport>().WithOne().HasForeignKey<FeedbackScreenshot>(e => e.ReportId).OnDelete(DeleteBehavior.Cascade);
+            entity.ToTable("FeedbackScreenshots", table => table.HasCheckConstraint(
+                "CK_FeedbackScreenshots_Size", "octet_length(\"Jpeg\") BETWEEN 3 AND 1048576 AND \"Bytes\" = octet_length(\"Jpeg\")"));
+        });
+
         // User entity
         modelBuilder.Entity<User>(entity =>
         {

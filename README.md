@@ -19,6 +19,8 @@ host/address lookup and waiting-roster control remain development-only.
 | `POST /servers/register` | Trusted provisioned GUID + current Steam GameHost identity, protocol and process instance (development: IP:port) |
 | `POST /servers/{id}/heartbeat` | GameHost liveness/load and current identity check |
 | `GET /servers` | Physical GameHost lookup in development only; VPS returns 404 |
+| `POST /feedback` | JWT-authenticated player feedback with optional JPEG and client-reported match context |
+| `GET /owner/feedback`, `GET /owner/feedback/{id}`, `GET /owner/feedback/{id}/screenshot` | Private owner-key report listing, evidence detail, and JPEG |
 | `POST /match/result`, `POST /match/cancel` | Authenticated terminal Match report, matching Room return; cancellation has no winner |
 | `GET /owner/observation` | Dedicated owner-key read-only snapshot for the private console; disabled until configured |
 | `GET /owner/matches/{matchId}/diagnostics` | Bounded private GameHost match diagnostics |
@@ -806,3 +808,37 @@ unavailable/unprovisioned GameHost or timeout, and `502` means invalid/oversized
 upstream data detected before delivery. Once streaming starts, upstream failure,
 timeout or oversize terminates the response. Public ingress must exclude these
 owner routes; access them through the private owner console.
+
+## Player feedback
+
+`POST /feedback` requires the existing player JWT. The reporter is the authenticated
+player, including a Steam player who has not chosen a display name. Send multipart
+`metadata` as `application/json`, followed by an optional `screenshot` as `image/jpeg`.
+The closed v1 metadata schema is illustrated by `MasterServer.Tests/Fixtures/feedback-v1.json`.
+Unknown fields are rejected. Messages can be empty and have at most 2000 UTF-16 units.
+Metadata is limited to 16 KiB, the JPEG to 1 MiB with an `FF D8 FF` prefix, and the
+whole streamed body to 1,114,112 bytes. Image dimensions are the client's responsibility.
+Master stores the image without decoding it.
+
+Acceptance returns HTTP 201 with `{reportId, receivedAtUtc}`. Repeating a
+`submissionId` for the same player returns HTTP 200 with the original receipt and
+keeps the original evidence. Each IP has a separate 10-request budget per 10 seconds.
+Each player can create 20 reports per rolling 24 hours. Repeats do not spend the
+player quota. HTTP 429 includes `Retry-After`.
+
+Errors use fixed `{code}` values. These are `invalid-feedback` for HTTP 400,
+`feedback-too-large` for 413, `unsupported-image` for 415,
+`unsupported-feedback-version` for 422, and `feedback-rate-limited` for 429.
+HTTP 401 requires authentication. Player text is never included in an error.
+
+All three `/owner/feedback` routes require the existing `X-Console-Key`, and return
+`Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. Listing accepts an
+opaque `cursor` and a `limit` from 1 to 100. It returns `{items, nextCursor}` in
+ascending server receipt time and report ID order. Items contain only `reportId`,
+`receivedAtUtc`, `kind`, `appVersion`, and `hasScreenshot`. Detail includes the
+reporter's Steam ID and current display name, message, stored context, claimed
+online match ID, and optional screenshot byte count and SHA-256. Screenshot bytes
+are served only by the screenshot route. Match context is client-reported evidence.
+Slop Factory rescans from the start each sweep because a cursor does not promise
+commit ordering. Accepted evidence is retained indefinitely in this slice, with
+manual deletion only. Triage remains owned by Slop Factory.
