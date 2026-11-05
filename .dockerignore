@@ -20,5 +20,7 @@
 !DTOs/**
 !Steam/
 !Steam/**
+!Feedback/
+!Feedback/**
 **/bin/
 **/obj/
