@@ -22,6 +22,82 @@ namespace MasterServer.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("MasterServer.Data.Models.FeedbackReport", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AppVersion")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ContextJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<bool>("HasScreenshot")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(4)
+                        .HasColumnType("character varying(4)");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<Guid?>("OnlineMatchId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("ReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("ReporterUserId")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("SubmissionId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReceivedAtUtc", "Id");
+
+                    b.HasIndex("ReporterUserId", "ReceivedAtUtc");
+
+                    b.HasIndex("ReporterUserId", "SubmissionId")
+                        .IsUnique();
+
+                    b.ToTable("FeedbackReports");
+                });
+
+            modelBuilder.Entity("MasterServer.Data.Models.FeedbackScreenshot", b =>
+                {
+                    b.Property<Guid>("ReportId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Bytes")
+                        .HasColumnType("integer");
+
+                    b.Property<byte[]>("Jpeg")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("ReportId");
+
+                    b.ToTable("FeedbackScreenshots", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_FeedbackScreenshots_Size", "octet_length(\"Jpeg\") BETWEEN 3 AND 1048576 AND \"Bytes\" = octet_length(\"Jpeg\")");
+                        });
+                });
+
             modelBuilder.Entity("MasterServer.Data.Models.GameServer", b =>
                 {
                     b.Property<Guid>("Id")
@@ -43,13 +119,13 @@ namespace MasterServer.Migrations
                     b.Property<string>("CustomRulesJson")
                         .HasColumnType("text");
 
+                    b.Property<Guid?>("InstanceId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("IpAddress")
                         .IsRequired()
                         .HasMaxLength(45)
                         .HasColumnType("character varying(45)");
-
-                    b.Property<Guid?>("InstanceId")
-                        .HasColumnType("uuid");
 
                     b.Property<bool>("IsOfficial")
                         .HasColumnType("boolean");
@@ -75,10 +151,10 @@ namespace MasterServer.Migrations
                         .IsRequired()
                         .HasMaxLength(16)
                         .HasColumnType("character varying(16)");
+
                     b.Property<string>("SteamId")
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
-
 
                     b.HasKey("Id");
 
@@ -96,12 +172,12 @@ namespace MasterServer.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<DateTime?>("CanceledAt")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<string>("CancelReason")
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime?>("CanceledAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTime?>("EndedAt")
                         .HasColumnType("timestamp with time zone");
@@ -115,23 +191,24 @@ namespace MasterServer.Migrations
                     b.Property<int?>("Player2ConnectedSeconds")
                         .HasColumnType("integer");
 
-                    b.Property<int?>("Player3ConnectedSeconds")
-                        .HasColumnType("integer");
-
-                    b.Property<int?>("Player4ConnectedSeconds")
-                        .HasColumnType("integer");
-
                     b.Property<long>("Player2SteamId")
                         .HasColumnType("bigint");
 
+                    b.Property<int?>("Player3ConnectedSeconds")
+                        .HasColumnType("integer");
+
                     b.Property<long?>("Player3SteamId")
                         .HasColumnType("bigint");
+
+                    b.Property<int?>("Player4ConnectedSeconds")
+                        .HasColumnType("integer");
 
                     b.Property<long?>("Player4SteamId")
                         .HasColumnType("bigint");
 
                     b.Property<Guid?>("RoomId")
                         .HasColumnType("uuid");
+
                     b.Property<Guid?>("ServerId")
                         .HasColumnType("uuid");
 
@@ -151,9 +228,10 @@ namespace MasterServer.Migrations
                     b.HasIndex("Player1SteamId");
 
                     b.HasIndex("Player2SteamId");
-                    b.HasIndex("ServerId");
+
                     b.HasIndex("RoomId");
 
+                    b.HasIndex("ServerId");
 
                     b.HasIndex("WinnerSteamId");
 
@@ -205,11 +283,11 @@ namespace MasterServer.Migrations
                         .HasColumnType("bigint");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("SteamId"));
+
                     b.Property<string>("AuthProvider")
                         .IsRequired()
                         .HasMaxLength(16)
                         .HasColumnType("character varying(16)");
-
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -228,6 +306,24 @@ namespace MasterServer.Migrations
                     b.HasKey("SteamId");
 
                     b.ToTable("Users");
+                });
+
+            modelBuilder.Entity("MasterServer.Data.Models.FeedbackReport", b =>
+                {
+                    b.HasOne("MasterServer.Data.Models.User", null)
+                        .WithMany()
+                        .HasForeignKey("ReporterUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("MasterServer.Data.Models.FeedbackScreenshot", b =>
+                {
+                    b.HasOne("MasterServer.Data.Models.FeedbackReport", null)
+                        .WithOne()
+                        .HasForeignKey("MasterServer.Data.Models.FeedbackScreenshot", "ReportId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("MasterServer.Data.Models.Match", b =>
